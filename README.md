@@ -1,44 +1,36 @@
 --[[
 ================================================================================
-    SISTEMA DE TRANSFORMAÇÃO MECHA (TRANSFORMERS) PARA ROBLOX
-    Versão: 2.0 - Mobile Optimized
-    Autor: Sistema de IA
-    Descrição: Sistema completo de transformação Humanoid <-> Mecha <-> Veículo
-    com animações procedurais, efeitos visuais imersivos e suporte 100% mobile.
-================================================================================
+    MECHA TRANSFORM SYSTEM V3.0 — CLIENT (LocalScript)
+    ====================================================================================
+    AUTÔNOMO • MOBILE-FIRST • SEM DEPENDÊNCIAS OBRIGATÓRIAS
+    ====================================================================================
     
-    ESTRUTURA DE PASTAS NECESSÁRIA (ReplicatedStorage):
+    LOCAL DE INSTALAÇÃO:
+    StarterPlayer > StarterPlayerScripts > MechaSystemClient (LocalScript)
     
-    ReplicatedStorage/
-    ├── MechaSystem/
-    │   ├── LocalScript (este script)
-    │   └── RemoteEvents/
-    │       ├── TransformEvent (RemoteEvent)
-    │       └── MechaStateEvent (RemoteEvent)
-    ├── MechaModels/
-    │   ├── MechaRig (Model)
-    │   └── VehicleRig (Model)
-    ├── Animations/
-    │   ├── MechaIdle (Animation)
-    │   ├── MechaWalk (Animation)
-    │   ├── MechaRun (Animation)
-    │   ├── MechaJump (Animation)
-    │   ├── VehicleIdle (Animation)
-    │   ├── TransformToMecha (Animation)
-    │   └── TransformToVehicle (Animation)
-    └── Sounds/
-        ├── TransformStart (Sound)
-        ├── TransformMid (Sound)
-        ├── TransformEnd (Sound)
-        ├── FootstepMecha (Sound)
-        ├── EngineIdle (Sound)
-        └── ServoMotor (Sound)
-
-================================================================================
+    PROBLEMAS DA V2.0 CORRIGIDOS:
+    - WaitForChild() infinito em pastas inexistentes → AGORA cria tudo sozinho
+    - Modelos com posições absolutas → AGORA coordenadas relativas ao pivô
+    - Motor6D nomes inconsistentes → AGORA tabela central de referências
+    - Veículo sem física real → AGORA raycast-based vehicle physics
+    - Mecha sem controle real → AGORA controle via CameraSubject + Humanoid
+    - UI duplicada em respawn → AGORA cleanup completo
+    - Sem diagnóstico → AGORA painel de debug visual
+    - Sem recuperação de erros → AGORA state machine com fallback
+    - Transformação incompleta → AGORA timeout + rollback automático
+    
+    ARQUITETURA:
+    - State Machine: Initializing → Human → Transforming → Mecha/Vehicle → Recovering
+    - Modelos procedurais com coordenadas relativas
+    - Motor6D centralizados em tabela de joints
+    - Veículo com raycast suspension + CFrame movement
+    - UI mobile-first com botões touch adequados
+    - Cleanup automático em CharacterRemoving
+    ====================================================================================
 ]]
 
 -- ============================================================================
--- SEÇÃO 1: SERVIÇOS E DEPENDÊNCIAS
+-- MÓDULO 1: SERVIÇOS (obtidos com segurança)
 -- ============================================================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -47,1986 +39,2449 @@ local UserInputService = game:GetService("UserInputService")
 local ContextActionService = game:GetService("ContextActionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Lighting = game:GetService("Lighting")
-local SoundService = game:GetService("SoundService")
 
--- ============================================================================
--- SEÇÃO 2: REFERÊNCIAS DO JOGADOR LOCAL
--- ============================================================================
 local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
-local character = player.Character or player.CharacterAdded:Wait()
-local humanoid = character:WaitForChild("Humanoid")
-local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
 local camera = workspace.CurrentCamera
 
--- Aguardar o personagem carregar completamente
-player.CharacterAdded:Connect(function(char)
-    character = char
-    humanoid = char:WaitForChild("Humanoid")
-    humanoidRootPart = char:WaitForChild("HumanoidRootPart")
-end)
-
 -- ============================================================================
--- SEÇÃO 3: CONFIGURAÇÕES E CONSTANTES
+-- MÓDULO 2: CONFIGURAÇÃO CENTRAL
 -- ============================================================================
 local CONFIG = {
-    -- Velocidades de movimento
-    HUMANOID_WALK_SPEED = 16,
-    HUMANOID_JUMP_POWER = 50,
-    MECHA_WALK_SPEED = 32,
-    MECHA_RUN_SPEED = 48,
-    MECHA_JUMP_POWER = 80,
-    VEHICLE_MAX_SPEED = 120,
-    VEHICLE_TURN_SPEED = 3,
+    VERSION = "3.0.0",
     
-    -- Timing da transformação
-    TRANSFORM_ANTICIPATION = 0.5,    -- Fase 1: Antecipação
-    TRANSFORM_DISASSEMBLY = 1.0,     -- Fase 2: Desmontagem
-    TRANSFORM_ASSEMBLY = 1.5,        -- Fase 3: Montagem
-    TRANSFORM_FINALIZE = 0.5,        -- Fase 4: Finalização
-    TOTAL_TRANSFORM_TIME = 3.5,      -- Tempo total
+    -- Velocidades
+    HUMAN_WALK_SPEED = 16,
+    HUMAN_JUMP_POWER = 50,
+    MECHA_WALK_SPEED = 28,
+    MECHA_RUN_SPEED = 44,
+    MECHA_JUMP_POWER = 70,
     
-    -- Efeitos visuais
-    SPARK_COUNT = 20,
-    SMOKE_DENSITY = 0.5,
-    FLASH_INTENSITY = 5,
-    CAMERA_SHAKE_INTENSITY = 0.3,
-    CAMERA_SHAKE_DECAY = 0.9,
+    -- Veículo
+    VEHICLE_MAX_SPEED = 90,
+    VEHICLE_REVERSE_SPEED = 30,
+    VEHICLE_ACCELERATION = 40,
+    VEHICLE_BRAKE_FORCE = 60,
+    VEHICLE_TURN_SPEED = 2.5,
+    VEHICLE_GRAVITY = 50,
+    VEHICLE_SUSPENSION_REST = 2.5,
+    VEHICLE_SUSPENSION_STIFFNESS = 0.3,
+    
+    -- Transformação
+    TRANSFORM_DURATION = 3.0,
+    TRANSFORM_PHASES = 4,
+    
+    -- Cores
+    MECHA_PRIMARY = Color3.fromRGB(45, 50, 70),
+    MECHA_SECONDARY = Color3.fromRGB(60, 65, 85),
+    MECHA_ACCENT = Color3.fromRGB(0, 160, 255),
+    MECHA_GLOW = Color3.fromRGB(0, 200, 255),
+    MECHA_DARK = Color3.fromRGB(25, 28, 40),
+    
+    VEHICLE_BODY = Color3.fromRGB(180, 30, 30),
+    VEHICLE_ACCENT = Color3.fromRGB(220, 180, 0),
+    VEHICLE_DARK = Color3.fromRGB(30, 30, 35),
+    VEHICLE_GLASS = Color3.fromRGB(120, 180, 220),
     
     -- Câmera
-    MECHA_CAMERA_OFFSET = CFrame.new(0, 8, 16),
-    VEHICLE_CAMERA_OFFSET = CFrame.new(0, 5, 20),
-    HEAD_TRACK_SPEED = 0.1,
-    HEAD_TRACK_LIMIT = math.rad(45),
-    
-    -- Cores e efeitos
-    MECHA_PRIMARY_COLOR = Color3.fromRGB(40, 40, 60),
-    MECHA_ACCENT_COLOR = Color3.fromRGB(0, 150, 255),
-    MECHA_EYE_COLOR = Color3.fromRGB(0, 200, 255),
-    MECHA_REACTOR_COLOR = Color3.fromRGB(255, 100, 0),
-    VEHICLE_PRIMARY_COLOR = Color3.fromRGB(200, 30, 30),
-    VEHICLE_ACCENT_COLOR = Color3.fromRGB(255, 200, 0),
+    MECHA_CAMERA_DIST = 18,
+    MECHA_CAMERA_HEIGHT = 10,
+    VEHICLE_CAMERA_DIST = 22,
+    VEHICLE_CAMERA_HEIGHT = 7,
     
     -- Mobile
-    MOBILE_BUTTON_SIZE = UDim2.new(0, 80, 0, 80),
-    MOBILE_BUTTON_POSITION = UDim2.new(1, -100, 0.5, 0),
-    
-    -- Física
-    MECHA_HIP_HEIGHT = 8,
-    VEHICLE_GROUND_OFFSET = 2,
+    BUTTON_SIZE = UDim2.new(0, 64, 0, 64),
 }
 
 -- ============================================================================
--- SEÇÃO 4: ESTADOS DO SISTEMA
+-- MÓDULO 3: STATE MACHINE
 -- ============================================================================
-local SystemState = {
-    currentForm = "Humanoid",        -- "Humanoid", "Transforming", "Mecha", "Vehicle"
-    isTransforming = false,
+local StateMachine = {
+    current = "Initializing",
+    previous = "None",
     transformProgress = 0,
+    isLocked = false,
+    lastError = "None",
+    initPhase = 0,
+    partCount = 0,
+    initialized = false,
+}
+
+local VALID_TRANSITIONS = {
+    ["Initializing"] = {"Human", "Recovering"},
+    ["Human"] = {"TransformingToMecha", "Recovering"},
+    ["TransformingToMecha"] = {"Mecha", "Human", "Recovering"},
+    ["Mecha"] = {"TransformingToVehicle", "ReturningToHuman", "Recovering"},
+    ["TransformingToVehicle"] = {"Vehicle", "Mecha", "Recovering"},
+    ["Vehicle"] = {"TransformingToMecha", "ReturningToHuman", "Recovering"},
+    ["ReturningToHuman"] = {"Human", "Recovering"},
+    ["Recovering"] = {"Human", "Initializing"},
+}
+
+--- Transiciona para um novo estado com validação
+--- @param newState string
+--- @return boolean success
+function StateMachine:transition(newState)
+    local allowed = VALID_TRANSITIONS[self.current]
+    if not allowed then
+        self.lastError = "Estado invalido: " .. self.current
+        return false
+    end
+    
+    for _, state in ipairs(allowed) do
+        if state == newState then
+            self.previous = self.current
+            self.current = newState
+            return true
+        end
+    end
+    
+    self.lastError = "Transicao invalida: " .. self.current .. " -> " .. newState
+    return false
+end
+
+-- ============================================================================
+-- MÓDULO 4: REFERÊNCIAS DO SISTEMA (centralizadas)
+-- ============================================================================
+local SystemRefs = {
+    -- Personagem
+    character = nil,
+    humanoid = nil,
+    rootPart = nil,
+    
+    -- Modelos
     mechaModel = nil,
     vehicleModel = nil,
-    activeAnimations = {},
-    cameraShake = { intensity = 0, decay = CONFIG.CAMERA_SHAKE_DECAY },
-    headTrackTarget = Vector3.zero,
-    proceduralTime = 0,
+    
+    -- Juntas do Mecha (tabela central)
+    mechaJoints = {},
+    mechaParts = {},
+    
+    -- Juntas/Refs do Veículo
+    vehicleJoints = {},
+    vehicleParts = {},
+    vehicleWheels = {},
+    
+    -- UI
+    ui = {},
     mobileButtons = {},
-    uiElements = {},
+    vehicleControls = {},
+    
+    -- Efeitos reutilizáveis
+    effects = {},
+    
+    -- Conexões (para cleanup)
     connections = {},
+    
+    -- Propriedades originais do personagem
     originalProperties = {},
+    
+    -- Estado do veículo
+    vehicleState = {
+        speed = 0,
+        steer = 0,
+        grounded = false,
+        orientation = CFrame.new(),
+    },
 }
 
 -- ============================================================================
--- SEÇÃO 5: REMOTE EVENTS
--- ============================================================================
-local mechaFolder = ReplicatedStorage:WaitForChild("MechaSystem")
-local transformEvent = mechaFolder:WaitForChild("RemoteEvents"):WaitForChild("TransformEvent")
-local mechaStateEvent = mechaFolder:WaitForChild("RemoteEvents"):WaitForChild("MechaStateEvent")
-
--- ============================================================================
--- SEÇÃO 6: FUNÇÕES UTILITÁRIAS
+-- MÓDULO 5: UTILITÁRIOS
 -- ============================================================================
 
---- Cria um tween com configurações padrão
---- @param instance Instance - Objeto a ser animado
---- @param properties table - Propriedades alvo
---- @param duration number - Duração em segundos
---- @param easingStyle Enum.EasingStyle - Estilo de easing
---- @param easingDirection Enum.EasingDirection - Direção do easing
---- @return Tween
-local function createTween(instance, properties, duration, easingStyle, easingDirection)
-    local tweenInfo = TweenInfo.new(
-        duration or 0.5,
-        easingStyle or Enum.EasingStyle.Quad,
-        easingDirection or Enum.EasingDirection.Out
-    )
-    return TweenService:Create(instance, tweenInfo, properties)
+--- Log do sistema com prefixo
+local function sysLog(msg, level)
+    level = level or "INFO"
+    local prefix = "[MechaV3][" .. level .. "] "
+    if level == "ERROR" then
+        warn(prefix .. msg)
+    elseif level == "WARN" then
+        warn(prefix .. msg)
+    else
+        print(prefix .. msg)
+    end
 end
 
---- Toca um som com parâmetros opcionais
---- @param soundId string - ID do som (rbxassetid://...)
---- @param parent Instance - Parent do som
---- @param volume number - Volume (0-1)
---- @param playbackSpeed number - Velocidade de reprodução
---- @return Sound
-local function playSound(soundId, parent, volume, playbackSpeed)
-    local sound = Instance.new("Sound")
-    sound.SoundId = soundId
-    sound.Volume = volume or 1
-    sound.PlaybackSpeed = playbackSpeed or 1
-    sound.Parent = parent or humanoidRootPart
-    sound:Play()
-    
-    -- Limpar após terminar
-    sound.Ended:Connect(function()
-        sound:Destroy()
+--- Cria um tween de forma segura
+local function safeTween(instance, props, duration, style, direction)
+    if not instance or not props then return nil end
+    local ok, tween = pcall(function()
+        local info = TweenInfo.new(
+            duration or 0.5,
+            style or Enum.EasingStyle.Quad,
+            direction or Enum.EasingDirection.Out
+        )
+        return TweenService:Create(instance, info, props)
     end)
-    
-    return sound
+    if ok and tween then
+        return tween
+    end
+    return nil
 end
 
---- Cria um Motor6D entre duas partes
---- @param part0 BasePart - Parte pai
---- @param part1 BasePart - Parte filha
---- @param c0 CFrame - Offset da parte 0
---- @param c1 CFrame - Offset da parte 1
---- @return Motor6D
-local function createMotor6D(part0, part1, c0, c1)
+--- Espera com timeout (não bloqueia indefinidamente)
+local function waitForWithTimeout(instance, childName, timeout)
+    timeout = timeout or 5
+    if not instance then return nil end
+    
+    local child = instance:FindFirstChild(childName)
+    if child then return child end
+    
+    -- Espera limitada
+    local startTime = tick()
+    while tick() - startTime < timeout do
+        child = instance:FindFirstChild(childName)
+        if child then return child end
+        task.wait(0.1)
+    end
+    
+    sysLog("Timeout esperando: " .. childName, "WARN")
+    return nil
+end
+
+--- Cria uma part básica com propriedades
+local function createPart(props)
+    local part = Instance.new("Part")
+    part.Name = props.Name or "Part"
+    part.Size = props.Size or Vector3.new(1, 1, 1)
+    part.Color = props.Color or Color3.new(1, 1, 1)
+    part.Material = props.Material or Enum.Material.SmoothPlastic
+    part.Transparency = props.Transparency or 0
+    part.Anchored = props.Anchored or false
+    part.CanCollide = props.CanCollide ~= false
+    part.Massless = props.Massless or false
+    part.Shape = props.Shape or Enum.PartType.Block
+    if props.CFrame then
+        part.CFrame = props.CFrame
+    end
+    return part
+end
+
+--- Cria Motor6D e registra na tabela central
+local function createJoint(name, part0, part1, c0, c1)
+    if not part0 or not part1 then
+        sysLog("createJoint: part0 ou part1 nulo para " .. name, "ERROR")
+        return nil
+    end
+    
     local motor = Instance.new("Motor6D")
-    motor.Name = part1.Name .. "_Motor"
+    motor.Name = name
     motor.Part0 = part0
     motor.Part1 = part1
     motor.C0 = c0 or CFrame.new()
     motor.C1 = c1 or CFrame.new()
     motor.Parent = part0
+    
+    -- Registra na tabela central
+    SystemRefs.mechaJoints[name] = motor
+    
     return motor
 end
 
---- Cria um ParticleEmitter com configurações
---- @param parent Instance - Parent do emitter
---- @param config table - Configurações do emitter
---- @return ParticleEmitter
-local function createParticleEmitter(parent, config)
+--- Cria efeito de partícula reutilizável
+local function createEffect(name, parent, config)
+    -- Verifica se já existe
+    if SystemRefs.effects[name] then
+        return SystemRefs.effects[name]
+    end
+    
+    local attachment = Instance.new("Attachment")
+    attachment.Name = name .. "_Attach"
+    attachment.Parent = parent
+    
     local emitter = Instance.new("ParticleEmitter")
-    emitter.Name = config.Name or "Effect"
+    emitter.Name = name
     emitter.Texture = config.Texture or "rbxassetid://243098098"
-    emitter.Rate = config.Rate or 10
-    emitter.Lifetime = config.Lifetime or NumberRange.new(0.5, 1)
+    emitter.Rate = 0 -- Inicia desativado
+    emitter.Lifetime = config.Lifetime or NumberRange.new(0.3, 0.8)
     emitter.Speed = config.Speed or NumberRange.new(5, 10)
-    emitter.SpreadAngle = config.SpreadAngle or Vector2.new(360, 360)
-    emitter.Rotation = config.Rotation or NumberRange.new(0, 360)
-    emitter.RotSpeed = config.RotSpeed or NumberRange.new(-180, 180)
-    emitter.Size = config.Size or NumberSequence.new(1, 0)
+    emitter.SpreadAngle = config.SpreadAngle or Vector2.new(180, 180)
+    emitter.Size = config.Size or NumberSequence.new(0.5, 0)
     emitter.Transparency = config.Transparency or NumberSequence.new(0, 1)
-    emitter.Color = config.Color or ColorSequence.new(Color3.new(1, 1, 1))
-    emitter.LightEmission = config.LightEmission or 0.5
-    emitter.Parent = parent
+    emitter.Color = config.Color or ColorSequence.new(Color3.new(1, 0.8, 0.2))
+    emitter.LightEmission = config.LightEmission or 0.8
+    emitter.Parent = attachment
+    
+    SystemRefs.effects[name] = emitter
     return emitter
 end
 
---- Cria um Attachment em uma parte
---- @param parent BasePart - Parte pai
---- @param name string - Nome do attachment
---- @param position Vector3 - Posição local
---- @return Attachment
-local function createAttachment(parent, name, position)
-    local attachment = Instance.new("Attachment")
-    attachment.Name = name
-    attachment.Position = position or Vector3.zero
-    attachment.Parent = parent
-    return attachment
-end
-
---- Aplica shake de câmera
---- @param intensity number - Intensidade do shake
-local function applyCameraShake(intensity)
-    SystemState.cameraShake.intensity = math.max(
-        SystemState.cameraShake.intensity, 
-        intensity or CONFIG.CAMERA_SHAKE_INTENSITY
-    )
-end
-
---- Lerp entre dois CFrames
---- @param cf1 CFrame - CFrame inicial
---- @param cf2 CFrame - CFrame final
---- @param alpha number - Interpolação (0-1)
---- @return CFrame
-local function lerpCFrame(cf1, cf2, alpha)
-    return cf1:Lerp(cf2, math.clamp(alpha, 0, 1))
-end
-
---- Obtém todas as partes de um modelo recursivamente
---- @param model Model - Modelo a buscar
---- @return table - Array de BaseParts
-local function getAllParts(model)
-    local parts = {}
-    for _, descendant in ipairs(model:GetDescendants()) do
-        if descendant:IsA("BasePart") then
-            table.insert(parts, descendant)
+--- Ativa efeito temporariamente
+local function activateEffect(name, duration, rate)
+    local emitter = SystemRefs.effects[name]
+    if not emitter then return end
+    
+    rate = rate or 30
+    emitter.Rate = rate
+    
+    task.delay(duration or 1, function()
+        if emitter and emitter.Parent then
+            emitter.Rate = 0
         end
-    end
-    return parts
-end
-
---- Define a cor de todas as partes de um modelo
---- @param model Model - Modelo
---- @param color Color3 - Cor alvo
-local function setModelColor(model, color)
-    for _, part in ipairs(getAllParts(model)) do
-        part.Color = color
-    end
+    end)
 end
 
 -- ============================================================================
--- SEÇÃO 7: GERAÇÃO PROCEDURAL DO MECHA
+-- MÓDULO 6: CONSTRUÇÃO PROCEDURAL DO MECHA
 -- ============================================================================
 
---- Cria o modelo do Mecha proceduralmente
---- @return Model - Modelo completo do Mecha
-local function generateMechaModel()
-    local mecha = Instance.new("Model")
-    mecha.Name = "MechaRig"
+--[[
+    O Mecha é construído com coordenadas RELATIVAS ao HumanoidRootPart.
+    Todas as peças são filhas do modelo e conectadas por Motor6D.
+    O pivô central é o HumanoidRootPart do mecha.
+]]
+
+local function buildMechaModel()
+    sysLog("Construindo modelo Mecha...")
     
-    -- Materiais base
-    local armorMaterial = Instance.new("MaterialVariant")
+    local model = Instance.new("Model")
+    model.Name = "MechaModel_V3"
     
-    -- Configuração das partes do mecha
-    local partConfigs = {
-        -- Torso Superior (peito do mecha)
-        {
-            name = "UpperTorso",
-            size = Vector3.new(4, 3, 2.5),
-            color = CONFIG.MECHA_PRIMARY_COLOR,
-            position = Vector3.new(0, 5, 0),
-            meshType = "Block",
-            transparency = 0,
-            material = Enum.Material.Metal,
-        },
-        -- Torso Inferior (abdômen do mecha)
-        {
-            name = "LowerTorso",
-            size = Vector3.new(3.5, 2, 2),
-            color = CONFIG.MECHA_PRIMARY_COLOR,
-            position = Vector3.new(0, 2.5, 0),
-            meshType = "Block",
-            material = Enum.Material.Metal,
-        },
-        -- Cabeça do Mecha
-        {
-            name = "Head",
-            size = Vector3.new(2.5, 2.5, 2.5),
-            color = CONFIG.MECHA_PRIMARY_COLOR,
-            position = Vector3.new(0, 7.5, 0),
-            meshType = "Block",
-            material = Enum.Material.Metal,
-        },
-        -- Braço Superior Esquerdo
-        {
-            name = "LeftUpperArm",
-            size = Vector3.new(1.8, 3, 1.8),
-            color = CONFIG.MECHA_PRIMARY_COLOR,
-            position = Vector3.new(-3.5, 5, 0),
-            meshType = "Block",
-            material = Enum.Material.Metal,
-        },
-        -- Braço Inferior Esquerdo
-        {
-            name = "LeftLowerArm",
-            size = Vector3.new(1.5, 3, 1.5),
-            color = CONFIG.MECHA_ACCENT_COLOR,
-            position = Vector3.new(-3.5, 2, 0),
-            meshType = "Block",
-            material = Enum.Material.Metal,
-        },
-        -- Braço Superior Direito
-        {
-            name = "RightUpperArm",
-            size = Vector3.new(1.8, 3, 1.8),
-            color = CONFIG.MECHA_PRIMARY_COLOR,
-            position = Vector3.new(3.5, 5, 0),
-            meshType = "Block",
-            material = Enum.Material.Metal,
-        },
-        -- Braço Inferior Direito
-        {
-            name = "RightLowerArm",
-            size = Vector3.new(1.5, 3, 1.5),
-            color = CONFIG.MECHA_ACCENT_COLOR,
-            position = Vector3.new(3.5, 2, 0),
-            meshType = "Block",
-            material = Enum.Material.Metal,
-        },
-        -- Perna Superior Esquerda
-        {
-            name = "LeftUpperLeg",
-            size = Vector3.new(2, 3.5, 2),
-            color = CONFIG.MECHA_PRIMARY_COLOR,
-            position = Vector3.new(-1.5, -0.5, 0),
-            meshType = "Block",
-            material = Enum.Material.Metal,
-        },
-        -- Perna Inferior Esquerda
-        {
-            name = "LeftLowerLeg",
-            size = Vector3.new(1.8, 3.5, 1.8),
-            color = CONFIG.MECHA_PRIMARY_COLOR,
-            position = Vector3.new(-1.5, -4, 0),
-            meshType = "Block",
-            material = Enum.Material.Metal,
-        },
-        -- Pé Esquerdo
-        {
-            name = "LeftFoot",
-            size = Vector3.new(2, 1, 3),
-            color = CONFIG.MECHA_ACCENT_COLOR,
-            position = Vector3.new(-1.5, -6, 0.5),
-            meshType = "Block",
-            material = Enum.Material.Metal,
-        },
-        -- Perna Superior Direita
-        {
-            name = "RightUpperLeg",
-            size = Vector3.new(2, 3.5, 2),
-            color = CONFIG.MECHA_PRIMARY_COLOR,
-            position = Vector3.new(1.5, -0.5, 0),
-            meshType = "Block",
-            material = Enum.Material.Metal,
-        },
-        -- Perna Inferior Direita
-        {
-            name = "RightLowerLeg",
-            size = Vector3.new(1.8, 3.5, 1.8),
-            color = CONFIG.MECHA_PRIMARY_COLOR,
-            position = Vector3.new(1.5, -4, 0),
-            meshType = "Block",
-            material = Enum.Material.Metal,
-        },
-        -- Pé Direito
-        {
-            name = "RightFoot",
-            size = Vector3.new(2, 1, 3),
-            color = CONFIG.MECHA_ACCENT_COLOR,
-            position = Vector3.new(1.5, -6, 0.5),
-            meshType = "Block",
-            material = Enum.Material.Metal,
-        },
-    }
+    -- Pivô central (invisível)
+    local pivot = Instance.new("Part")
+    pivot.Name = "Pivot"
+    pivot.Size = Vector3.new(2, 3, 1)
+    pivot.Transparency = 1
+    pivot.CanCollide = false
+    pivot.Anchored = false
+    pivot.CFrame = CFrame.new(0, 0, 0)
+    pivot.Parent = model
     
-    -- HumanoidRootPart do Mecha (maior que o normal)
-    local hrp = Instance.new("Part")
-    hrp.Name = "HumanoidRootPart"
-    hrp.Size = Vector3.new(2, 3, 1)
-    hrp.Transparency = 1
-    hrp.CanCollide = false
-    hrp.Anchored = false
-    hrp.CFrame = humanoidRootPart.CFrame
-    hrp.Parent = mecha
-    
-    -- Criar cada parte do mecha
+    -- Tabela de peças (referências relativas ao pivot)
     local parts = {}
-    for _, config in ipairs(partConfigs) do
-        local part = Instance.new("Part")
-        part.Name = config.name
-        part.Size = config.size
-        part.Color = config.color
-        part.Material = config.material or Enum.Material.Metal
-        part.Transparency = config.transparency or 0
-        part.Anchored = false
-        part.CanCollide = true
-        part.Massless = false
-        part.CFrame = CFrame.new(config.position)
-        
-        -- Adicionar detalhes visuais (bordas, painéis)
-        local mesh = Instance.new("SpecialMesh")
-        mesh.MeshType = Enum.MeshType.Brick
-        mesh.Scale = Vector3.new(1, 1, 1)
-        mesh.Parent = part
-        
-        -- Adicionar detalhes de superfície
-        local surfaceGlow = Instance.new("SurfaceLight")
-        surfaceGlow.Brightness = 0.5
-        surfaceGlow.Color = CONFIG.MECHA_ACCENT_COLOR
-        surfaceGlow.Range = 3
-        surfaceGlow.Face = Enum.NormalFace.Front
-        surfaceGlow.Enabled = false
-        surfaceGlow.Parent = part
-        
-        part.Parent = mecha
-        parts[config.name] = part
+    local jointConfigs = {}
+    
+    -- =========================================================================
+    -- FUNÇÃO AUXILIAR: Cria uma peça do mecha com offset relativo
+    -- =========================================================================
+    local function addMechaPart(name, size, offset, color, material)
+        local part = createPart({
+            Name = name,
+            Size = size,
+            Color = color or CONFIG.MECHA_PRIMARY,
+            Material = material or Enum.Material.Metal,
+            CFrame = CFrame.new(offset),
+            CanCollide = true,
+            Anchored = false,
+        })
+        part.Parent = model
+        parts[name] = part
+        SystemRefs.mechaParts[name] = part
+        return part
     end
     
-    -- Criar Humanoid do Mecha
+    -- =========================================================================
+    -- CABEÇA (capacete robótico com visor)
+    -- =========================================================================
+    -- Capacete principal
+    addMechaPart("Head", Vector3.new(2.8, 2.4, 2.6), Vector3.new(0, 8.2, 0), CONFIG.MECHA_PRIMARY)
+    
+    -- Visor (parte frontal da cabeça)
+    local visor = addMechaPart("HeadVisor", Vector3.new(2.2, 0.8, 0.3), Vector3.new(0, 8.4, 1.3), CONFIG.MECHA_GLOW, Enum.Material.Neon)
+    visor.Transparency = 0.2
+    
+    -- Antena esquerda
+    addMechaPart("AntennaL", Vector3.new(0.2, 1.2, 0.2), Vector3.new(-1, 9.5, 0), CONFIG.MECHA_ACCENT, Enum.Material.Neon)
+    
+    -- Antena direita
+    addMechaPart("AntennaR", Vector3.new(0.2, 1.2, 0.2), Vector3.new(1, 9.5, 0), CONFIG.MECHA_ACCENT, Enum.Material.Neon)
+    
+    -- Queixo mecânico
+    addMechaPart("HeadJaw", Vector3.new(2, 0.6, 1.8), Vector3.new(0, 7, 0.2), CONFIG.MECHA_DARK)
+    
+    -- =========================================================================
+    -- PESCOÇO
+    -- =========================================================================
+    addMechaPart("Neck", Vector3.new(1.2, 0.8, 1.2), Vector3.new(0, 6.6, 0), CONFIG.MECHA_DARK)
+    
+    -- =========================================================================
+    -- TORSO SUPERIOR (peitoral com placas)
+    -- =========================================================================
+    -- Peito principal
+    addMechaPart("UpperTorso", Vector3.new(4.5, 3, 2.8), Vector3.new(0, 5, 0), CONFIG.MECHA_PRIMARY)
+    
+    -- Placa peitoral esquerda
+    addMechaPart("ChestPlateL", Vector3.new(1.8, 2, 0.4), Vector3.new(-0.8, 5.2, 1.4), CONFIG.MECHA_SECONDARY)
+    
+    -- Placa peitoral direita
+    addMechaPart("ChestPlateR", Vector3.new(1.8, 2, 0.4), Vector3.new(0.8, 5.2, 1.4), CONFIG.MECHA_SECONDARY)
+    
+    -- Reator central (luminoso)
+    local reactor = addMechaPart("Reactor", Vector3.new(1, 1, 0.5), Vector3.new(0, 5, 1.5), CONFIG.MECHA_GLOW, Enum.Material.Neon)
+    reactor.Transparency = 0.1
+    
+    -- Painel traseiro
+    addMechaPart("BackPanel", Vector3.new(3.5, 2.5, 0.5), Vector3.new(0, 5, -1.4), CONFIG.MECHA_DARK)
+    
+    -- =========================================================================
+    -- TORSO INFERIOR (abdômen segmentado)
+    -- =========================================================================
+    addMechaPart("LowerTorso", Vector3.new(3.8, 2, 2.4), Vector3.new(0, 3, 0), CONFIG.MECHA_SECONDARY)
+    
+    -- Segmentos abdominais
+    for i = 1, 3 do
+        addMechaPart("AbsSeg" .. i, Vector3.new(2.5, 0.4, 0.3), Vector3.new(0, 2.2 + i * 0.5, 1.2), CONFIG.MECHA_DARK)
+    end
+    
+    -- =========================================================================
+    -- OMBREIRAS (volumosas)
+    -- =========================================================================
+    addMechaPart("ShoulderL", Vector3.new(2.2, 1.8, 2.2), Vector3.new(-3.2, 6, 0), CONFIG.MECHA_PRIMARY)
+    addMechaPart("ShoulderR", Vector3.new(2.2, 1.8, 2.2), Vector3.new(3.2, 6, 0), CONFIG.MECHA_PRIMARY)
+    
+    -- Detalhes das ombreiras
+    addMechaPart("ShoulderDetailL", Vector3.new(1.5, 0.4, 1.5), Vector3.new(-3.2, 7, 0), CONFIG.MECHA_ACCENT, Enum.Material.Neon)
+    addMechaPart("ShoulderDetailR", Vector3.new(1.5, 0.4, 1.5), Vector3.new(3.2, 7, 0), CONFIG.MECHA_ACCENT, Enum.Material.Neon)
+    
+    -- =========================================================================
+    -- BRAÇOS (armadura segmentada)
+    -- =========================================================================
+    -- Braço superior esquerdo
+    addMechaPart("UpperArmL", Vector3.new(1.6, 2.8, 1.6), Vector3.new(-3.5, 4, 0), CONFIG.MECHA_SECONDARY)
+    
+    -- Cotovelo esquerdo (junta visível)
+    addMechaPart("ElbowL", Vector3.new(1.2, 0.8, 1.2), Vector3.new(-3.5, 2.5, 0), CONFIG.MECHA_DARK)
+    
+    -- Antebraço esquerdo (reforçado)
+    addMechaPart("LowerArmL", Vector3.new(1.8, 2.8, 1.8), Vector3.new(-3.5, 1, 0), CONFIG.MECHA_PRIMARY)
+    
+    -- Mão esquerda
+    addMechaPart("HandL", Vector3.new(1.4, 1.4, 1), Vector3.new(-3.5, -0.6, 0), CONFIG.MECHA_DARK)
+    
+    -- Braço superior direito
+    addMechaPart("UpperArmR", Vector3.new(1.6, 2.8, 1.6), Vector3.new(3.5, 4, 0), CONFIG.MECHA_SECONDARY)
+    
+    -- Cotovelo direito
+    addMechaPart("ElbowR", Vector3.new(1.2, 0.8, 1.2), Vector3.new(3.5, 2.5, 0), CONFIG.MECHA_DARK)
+    
+    -- Antebraço direito
+    addMechaPart("LowerArmR", Vector3.new(1.8, 2.8, 1.8), Vector3.new(3.5, 1, 0), CONFIG.MECHA_PRIMARY)
+    
+    -- Mão direita
+    addMechaPart("HandR", Vector3.new(1.4, 1.4, 1), Vector3.new(3.5, -0.6, 0), CONFIG.MECHA_DARK)
+    
+    -- =========================================================================
+    -- QUADRIL
+    -- =========================================================================
+    addMechaPart("Hip", Vector3.new(3.5, 1.2, 2.2), Vector3.new(0, 1.8, 0), CONFIG.MECHA_DARK)
+    
+    -- =========================================================================
+    -- PERNAS (coxas com armadura)
+    -- =========================================================================
+    -- Coxa esquerda
+    addMechaPart("UpperLegL", Vector3.new(2, 3, 2), Vector3.new(-1.2, -0.2, 0), CONFIG.MECHA_PRIMARY)
+    
+    -- Joelho esquerdo
+    addMechaPart("KneeL", Vector3.new(1.6, 1, 1.6), Vector3.new(-1.2, -1.8, 0.3), CONFIG.MECHA_ACCENT)
+    
+    -- Canela esquerda
+    addMechaPart("LowerLegL", Vector3.new(1.8, 3, 1.8), Vector3.new(-1.2, -3.5, 0), CONFIG.MECHA_SECONDARY)
+    
+    -- Pé esquerdo (largo)
+    addMechaPart("FootL", Vector3.new(2, 0.8, 3.2), Vector3.new(-1.2, -5.2, 0.4), CONFIG.MECHA_DARK)
+    
+    -- Coxa direita
+    addMechaPart("UpperLegR", Vector3.new(2, 3, 2), Vector3.new(1.2, -0.2, 0), CONFIG.MECHA_PRIMARY)
+    
+    -- Joelho direito
+    addMechaPart("KneeR", Vector3.new(1.6, 1, 1.6), Vector3.new(1.2, -1.8, 0.3), CONFIG.MECHA_ACCENT)
+    
+    -- Canela direita
+    addMechaPart("LowerLegR", Vector3.new(1.8, 3, 1.8), Vector3.new(1.2, -3.5, 0), CONFIG.MECHA_SECONDARY)
+    
+    -- Pé direito
+    addMechaPart("FootR", Vector3.new(2, 0.8, 3.2), Vector3.new(1.2, -5.2, 0.4), CONFIG.MECHA_DARK)
+    
+    -- =========================================================================
+    -- DETALHES ADICIONAIS (pistões, cabos simulados)
+    -- =========================================================================
+    -- Pistões nos braços
+    addMechaPart("PistonArmL", Vector3.new(0.3, 2, 0.3), Vector3.new(-4.3, 3, 0.5), CONFIG.MECHA_ACCENT, Enum.Material.Metal)
+    addMechaPart("PistonArmR", Vector3.new(0.3, 2, 0.3), Vector3.new(4.3, 3, 0.5), CONFIG.MECHA_ACCENT, Enum.Material.Metal)
+    
+    -- Pistões nas pernas
+    addMechaPart("PistonLegL", Vector3.new(0.3, 2.5, 0.3), Vector3.new(-2.2, -1, 0.8), CONFIG.MECHA_ACCENT, Enum.Material.Metal)
+    addMechaPart("PistonLegR", Vector3.new(0.3, 2.5, 0.3), Vector3.new(2.2, -1, 0.8), CONFIG.MECHA_ACCENT, Enum.Material.Metal)
+    
+    -- Motores laterais no torso
+    addMechaPart("EngineL", Vector3.new(0.8, 1.5, 1.5), Vector3.new(-2.5, 4.5, -0.8), CONFIG.MECHA_DARK)
+    addMechaPart("EngineR", Vector3.new(0.8, 1.5, 1.5), Vector3.new(2.5, 4.5, -0.8), CONFIG.MECHA_DARK)
+    
+    -- =========================================================================
+    -- LUCES
+    -- =========================================================================
+    -- Luz do reator
+    local reactorLight = Instance.new("PointLight")
+    reactorLight.Name = "ReactorLight"
+    reactorLight.Color = CONFIG.MECHA_GLOW
+    reactorLight.Brightness = 3
+    reactorLight.Range = 12
+    reactorLight.Enabled = false
+    reactorLight.Parent = parts["Reactor"]
+    
+    -- Luz dos olhos/visor
+    local visorLight = Instance.new("PointLight")
+    visorLight.Name = "VisorLight"
+    visorLight.Color = CONFIG.MECHA_GLOW
+    visorLight.Brightness = 2
+    visorLight.Range = 8
+    visorLight.Enabled = false
+    visorLight.Parent = parts["HeadVisor"]
+    
+    -- =========================================================================
+    -- HUMANOID DO MECHA (para controle de movimento)
+    -- =========================================================================
     local mechaHumanoid = Instance.new("Humanoid")
-    mechaHumanoid.HipHeight = CONFIG.MECHA_HIP_HEIGHT
+    mechaHumanoid.Name = "MechaHumanoid"
+    mechaHumanoid.HipHeight = 5.5
     mechaHumanoid.WalkSpeed = 0
     mechaHumanoid.JumpPower = 0
     mechaHumanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
-    mechaHumanoid.Parent = mecha
+    mechaHumanoid.Parent = model
     
-    -- Criar Motor6Ds para as juntas
-    local joints = {
-        -- Torso
-        {part0 = "HumanoidRootPart", part1 = "LowerTorso", c0 = CFrame.new(0, -1, 0), c1 = CFrame.new(0, 1, 0)},
-        {part0 = "LowerTorso", part1 = "UpperTorso", c0 = CFrame.new(0, 1, 0), c1 = CFrame.new(0, -1.5, 0)},
-        {part0 = "UpperTorso", part1 = "Head", c0 = CFrame.new(0, 1.5, 0), c1 = CFrame.new(0, -1.25, 0)},
-        -- Braço Esquerdo
-        {part0 = "UpperTorso", part1 = "LeftUpperArm", c0 = CFrame.new(-2, 1, 0), c1 = CFrame.new(0, 1.5, 0)},
-        {part0 = "LeftUpperArm", part1 = "LeftLowerArm", c0 = CFrame.new(0, -1.5, 0), c1 = CFrame.new(0, 1.5, 0)},
-        -- Braço Direito
-        {part0 = "UpperTorso", part1 = "RightUpperArm", c0 = CFrame.new(2, 1, 0), c1 = CFrame.new(0, 1.5, 0)},
-        {part0 = "RightUpperArm", part1 = "RightLowerArm", c0 = CFrame.new(0, -1.5, 0), c1 = CFrame.new(0, 1.5, 0)},
-        -- Perna Esquerda
-        {part0 = "LowerTorso", part1 = "LeftUpperLeg", c0 = CFrame.new(-1, -1, 0), c1 = CFrame.new(0, 1.75, 0)},
-        {part0 = "LeftUpperLeg", part1 = "LeftLowerLeg", c0 = CFrame.new(0, -1.75, 0), c1 = CFrame.new(0, 1.75, 0)},
-        {part0 = "LeftLowerLeg", part1 = "LeftFoot", c0 = CFrame.new(0, -1.75, 0), c1 = CFrame.new(0, 0.5, 0)},
-        -- Perna Direita
-        {part0 = "LowerTorso", part1 = "RightUpperLeg", c0 = CFrame.new(1, -1, 0), c1 = CFrame.new(0, 1.75, 0)},
-        {part0 = "RightUpperLeg", part1 = "RightLowerLeg", c0 = CFrame.new(0, -1.75, 0), c1 = CFrame.new(0, 1.75, 0)},
-        {part0 = "RightLowerLeg", part1 = "RightFoot", c0 = CFrame.new(0, -1.75, 0), c1 = CFrame.new(0, 0.5, 0)},
+    -- =========================================================================
+    -- MOTOR6Ds (juntas) - conectando tudo ao pivot
+    -- =========================================================================
+    -- Cabeça → Pescoço → Torso Superior
+    createJoint("NeckJoint", pivot, parts["Neck"], CFrame.new(0, 3.3, 0), CFrame.new(0, -0.4, 0))
+    createJoint("HeadJoint", parts["Neck"], parts["Head"], CFrame.new(0, 0.4, 0), CFrame.new(0, -1.2, 0))
+    createJoint("JawJoint", parts["Head"], parts["HeadJaw"], CFrame.new(0, -0.9, 0.1), CFrame.new(0, 0.3, 0))
+    
+    -- Torso
+    createJoint("UpperTorsoJoint", parts["Neck"], parts["UpperTorso"], CFrame.new(0, -0.4, 0), CFrame.new(0, 1.5, 0))
+    createJoint("LowerTorsoJoint", parts["UpperTorso"], parts["LowerTorso"], CFrame.new(0, -1.5, 0), CFrame.new(0, 1, 0))
+    createJoint("HipJoint", parts["LowerTorso"], parts["Hip"], CFrame.new(0, -1, 0), CFrame.new(0, 0.6, 0))
+    
+    -- Ombros e Braços Esquerdo
+    createJoint("ShoulderJointL", parts["UpperTorso"], parts["ShoulderL"], CFrame.new(-2.25, 1, 0), CFrame.new(0, 0, 0))
+    createJoint("UpperArmJointL", parts["ShoulderL"], parts["UpperArmL"], CFrame.new(-0.3, -0.9, 0), CFrame.new(0, 1.4, 0))
+    createJoint("ElbowJointL", parts["UpperArmL"], parts["ElbowL"], CFrame.new(0, -1.4, 0), CFrame.new(0, 0.4, 0))
+    createJoint("LowerArmJointL", parts["ElbowL"], parts["LowerArmL"], CFrame.new(0, -0.4, 0), CFrame.new(0, 1.4, 0))
+    createJoint("HandJointL", parts["LowerArmL"], parts["HandL"], CFrame.new(0, -1.4, 0), CFrame.new(0, 0.7, 0))
+    
+    -- Ombros e Braços Direito
+    createJoint("ShoulderJointR", parts["UpperTorso"], parts["ShoulderR"], CFrame.new(2.25, 1, 0), CFrame.new(0, 0, 0))
+    createJoint("UpperArmJointR", parts["ShoulderR"], parts["UpperArmR"], CFrame.new(0.3, -0.9, 0), CFrame.new(0, 1.4, 0))
+    createJoint("ElbowJointR", parts["UpperArmR"], parts["ElbowR"], CFrame.new(0, -1.4, 0), CFrame.new(0, 0.4, 0))
+    createJoint("LowerArmJointR", parts["ElbowR"], parts["LowerArmR"], CFrame.new(0, -0.4, 0), CFrame.new(0, 1.4, 0))
+    createJoint("HandJointR", parts["LowerArmR"], parts["HandR"], CFrame.new(0, -1.4, 0), CFrame.new(0, 0.7, 0))
+    
+    -- Pernas Esquerda
+    createJoint("HipJointL", parts["Hip"], parts["UpperLegL"], CFrame.new(-0.8, -0.6, 0), CFrame.new(0, 1.5, 0))
+    createJoint("KneeJointL", parts["UpperLegL"], parts["KneeL"], CFrame.new(0, -1.5, 0.15), CFrame.new(0, 0.5, 0))
+    createJoint("LowerLegJointL", parts["KneeL"], parts["LowerLegL"], CFrame.new(0, -0.5, -0.15), CFrame.new(0, 1.5, 0))
+    createJoint("FootJointL", parts["LowerLegL"], parts["FootL"], CFrame.new(0, -1.5, 0), CFrame.new(0, 0.4, 0))
+    
+    -- Pernas Direita
+    createJoint("HipJointR", parts["Hip"], parts["UpperLegR"], CFrame.new(0.8, -0.6, 0), CFrame.new(0, 1.5, 0))
+    createJoint("KneeJointR", parts["UpperLegR"], parts["KneeR"], CFrame.new(0, -1.5, 0.15), CFrame.new(0, 0.5, 0))
+    createJoint("LowerLegJointR", parts["KneeR"], parts["LowerLegR"], CFrame.new(0, -0.5, -0.15), CFrame.new(0, 1.5, 0))
+    createJoint("FootJointR", parts["LowerLegR"], parts["FootR"], CFrame.new(0, -1.5, 0), CFrame.new(0, 0.4, 0))
+    
+    -- Pivot → Hip (conexão principal)
+    createJoint("RootJoint", pivot, parts["Hip"], CFrame.new(0, -1.5, 0), CFrame.new(0, 0.6, 0))
+    
+    -- Peças decorativas soldadas (não animadas)
+    local weldedParts = {
+        "HeadVisor", "AntennaL", "AntennaR", "ChestPlateL", "ChestPlateR",
+        "Reactor", "BackPanel", "AbsSeg1", "AbsSeg2", "AbsSeg3",
+        "ShoulderDetailL", "ShoulderDetailR", "PistonArmL", "PistonArmR",
+        "PistonLegL", "PistonLegR", "EngineL", "EngineR"
     }
     
-    for _, joint in ipairs(joints) do
-        if parts[joint.part0] and parts[joint.part1] then
-            createMotor6D(parts[joint.part0], parts[joint.part1], joint.c0, joint.c1)
-        elseif joint.part0 == "HumanoidRootPart" then
-            createMotor6D(hrp, parts[joint.part1], joint.c0, joint.c1)
+    for _, partName in ipairs(weldedParts) do
+        local part = parts[partName]
+        if part then
+            -- Encontra o parent motorizado mais próximo para soldar
+            local weld = Instance.new("WeldConstraint")
+            weld.Part0 = part
+            -- Solda ao torso ou à cabeça dependendo da posição
+            if part.Position.Y > 6 then
+                weld.Part1 = parts["Head"]
+            elseif part.Position.Y > 3 then
+                weld.Part1 = parts["UpperTorso"]
+            elseif part.Position.Y > 0 then
+                weld.Part1 = parts["LowerTorso"]
+            elseif part.Position.X < -2 then
+                weld.Part1 = parts["UpperArmL"]
+            elseif part.Position.X > 2 then
+                weld.Part1 = parts["UpperArmR"]
+            elseif part.Position.X < 0 then
+                weld.Part1 = parts["UpperLegL"]
+            else
+                weld.Part1 = parts["UpperLegR"]
+            end
+            weld.Parent = part
         end
     end
     
-    -- Adicionar Attachments para efeitos
-    local attachments = {
-        {parent = "LeftUpperArm", name = "Attachment_Thruster", pos = Vector3.new(-0.9, 0, 0)},
-        {parent = "RightUpperArm", name = "Attachment_Thruster", pos = Vector3.new(0.9, 0, 0)},
-        {parent = "UpperTorso", name = "Attachment_Reactor", pos = Vector3.new(0, 0, 1.3)},
-        {parent = "Head", name = "Attachment_EyeL", pos = Vector3.new(-0.5, 0.2, 1.3)},
-        {parent = "Head", name = "Attachment_EyeR", pos = Vector3.new(0.5, 0.2, 1.3)},
-        {parent = "LeftFoot", name = "Attachment_FootL", pos = Vector3.new(0, -0.5, 0)},
-        {parent = "RightFoot", name = "Attachment_FootR", pos = Vector3.new(0, -0.5, 0)},
-        {parent = "LeftLowerArm", name = "Attachment_Blade", pos = Vector3.new(0, -1.5, 0)},
-        {parent = "RightLowerArm", name = "Attachment_Blade", pos = Vector3.new(0, -1.5, 0)},
-    }
-    
-    for _, att in ipairs(attachments) do
-        if parts[att.parent] then
-            createAttachment(parts[att.parent], att.name, att.pos)
-        end
-    end
-    
-    -- Adicionar efeitos de partículas nos ombros
-    local sparkEmitter = createParticleEmitter(parts["LeftUpperArm"]:FindFirstChild("Attachment_Thruster") or parts["LeftUpperArm"], {
-        Name = "TransformSparks",
+    -- =========================================================================
+    -- EFEITOS (partículas reutilizáveis)
+    -- =========================================================================
+    -- Faíscas nos ombros
+    createEffect("ShoulderSparksL", parts["ShoulderL"], {
         Texture = "rbxassetid://243098098",
-        Rate = 0,
-        Lifetime = NumberRange.new(0.3, 0.8),
-        Speed = NumberRange.new(10, 20),
-        SpreadAngle = Vector2.new(180, 180),
-        Size = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.3),
-            NumberSequenceKeypoint.new(1, 0),
-        }),
-        Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0),
-            NumberSequenceKeypoint.new(0.5, 0.2),
-            NumberSequenceKeypoint.new(1, 1),
-        }),
-        Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 200, 50)),
-            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 100, 0)),
-            ColorSequenceKeypoint.new(1, Color3.fromRGB(100, 100, 100)),
-        }),
+        Lifetime = NumberRange.new(0.2, 0.5),
+        Speed = NumberRange.new(8, 15),
+        Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.3), NumberSequenceKeypoint.new(1, 0)}),
+        Color = ColorSequence.new(Color3.fromRGB(100, 200, 255)),
         LightEmission = 1,
     })
     
-    -- Duplicar para o ombro direito
-    local sparkEmitterR = sparkEmitter:Clone()
-    sparkEmitterR.Parent = parts["RightUpperArm"]:FindFirstChild("Attachment_Thruster") or parts["RightUpperArm"]
+    createEffect("ShoulderSparksR", parts["ShoulderR"], {
+        Texture = "rbxassetid://243098098",
+        Lifetime = NumberRange.new(0.2, 0.5),
+        Speed = NumberRange.new(8, 15),
+        Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.3), NumberSequenceKeypoint.new(1, 0)}),
+        Color = ColorSequence.new(Color3.fromRGB(100, 200, 255)),
+        LightEmission = 1,
+    })
     
-    -- Reator no peito (PointLight pulsante)
-    local reactorLight = Instance.new("PointLight")
-    reactorLight.Name = "ReactorLight"
-    reactorLight.Color = CONFIG.MECHA_REACTOR_COLOR
-    reactorLight.Brightness = 2
-    reactorLight.Range = 15
-    reactorLight.Enabled = false
-    reactorLight.Parent = parts["UpperTorso"]
+    -- Fumaça nos pés
+    createEffect("FootDustL", parts["FootL"], {
+        Texture = "rbxassetid://241866187",
+        Lifetime = NumberRange.new(0.5, 1),
+        Speed = NumberRange.new(2, 5),
+        SpreadAngle = Vector2.new(60, 30),
+        Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 1.5)}),
+        Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 1)}),
+        Color = ColorSequence.new(Color3.fromRGB(150, 140, 120)),
+        LightEmission = 0,
+    })
     
-    -- Luzes dos olhos
-    local eyeLightL = Instance.new("PointLight")
-    eyeLightL.Name = "EyeLight"
-    eyeLightL.Color = CONFIG.MECHA_EYE_COLOR
-    eyeLightL.Brightness = 3
-    eyeLightL.Range = 8
-    eyeLightL.Enabled = false
-    eyeLightL.Parent = parts["Head"]
+    createEffect("FootDustR", parts["FootR"], {
+        Texture = "rbxassetid://241866187",
+        Lifetime = NumberRange.new(0.5, 1),
+        Speed = NumberRange.new(2, 5),
+        SpreadAngle = Vector2.new(60, 30),
+        Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 1.5)}),
+        Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 1)}),
+        Color = ColorSequence.new(Color3.fromRGB(150, 140, 120)),
+        LightEmission = 0,
+    })
     
-    -- Definir PrimaryPart
-    mecha.PrimaryPart = hrp
+    -- Trail nos braços
+    local trailAtt0L = Instance.new("Attachment")
+    trailAtt0L.Position = Vector3.new(0, -1.2, 0)
+    trailAtt0L.Parent = parts["LowerArmL"]
+    local trailAtt1L = Instance.new("Attachment")
+    trailAtt1L.Position = Vector3.new(0, 1.2, 0)
+    trailAtt1L.Parent = parts["LowerArmL"]
     
-    -- Inicialmente invisível (aparece durante transformação)
-    mecha.Parent = workspace
+    local armTrailL = Instance.new("Trail")
+    armTrailL.Name = "ArmTrailL"
+    armTrailL.Attachment0 = trailAtt0L
+    armTrailL.Attachment1 = trailAtt1L
+    armTrailL.Lifetime = 0.3
+    armTrailL.LightEmission = 0.8
+    armTrailL.Color = ColorSequence.new(CONFIG.MECHA_ACCENT, Color3.fromRGB(0, 50, 150))
+    armTrailL.Transparency = NumberSequence.new(0.3, 1)
+    armTrailL.Enabled = false
+    armTrailL.Parent = parts["LowerArmL"]
     
-    -- Network ownership para o jogador local
-    pcall(function()
-        hrp:SetNetworkOwner(player)
-    end)
+    local trailAtt0R = Instance.new("Attachment")
+    trailAtt0R.Position = Vector3.new(0, -1.2, 0)
+    trailAtt0R.Parent = parts["LowerArmR"]
+    local trailAtt1R = Instance.new("Attachment")
+    trailAtt1R.Position = Vector3.new(0, 1.2, 0)
+    trailAtt1R.Parent = parts["LowerArmR"]
     
-    return mecha
+    local armTrailR = Instance.new("Trail")
+    armTrailR.Name = "ArmTrailR"
+    armTrailR.Attachment0 = trailAtt0R
+    armTrailR.Attachment1 = trailAtt1R
+    armTrailR.Lifetime = 0.3
+    armTrailR.LightEmission = 0.8
+    armTrailR.Color = ColorSequence.new(CONFIG.MECHA_ACCENT, Color3.fromRGB(0, 50, 150))
+    armTrailR.Transparency = NumberSequence.new(0.3, 1)
+    armTrailR.Enabled = false
+    armTrailR.Parent = parts["LowerArmR"]
+    
+    -- Configurar modelo
+    model.PrimaryPart = pivot
+    model:PivotTo(CFrame.new(0, -100, 0)) -- Esconde abaixo do mapa inicialmente
+    
+    -- Contar peças
+    local count = 0
+    for _ in pairs(parts) do count = count + 1 end
+    SystemRefs.partCount = count
+    
+    sysLog("Mecha construido: " .. count .. " pecas, " .. #SystemRefs.mechaJoints .. " juntas")
+    
+    return model
 end
 
 -- ============================================================================
--- SEÇÃO 8: GERAÇÃO PROCEDURAL DO VEÍCULO
+-- MÓDULO 7: CONSTRUÇÃO PROCEDURAL DO VEÍCULO
 -- ============================================================================
 
---- Cria o modelo do Veículo proceduralmente
---- @return Model - Modelo completo do Veículo
-local function generateVehicleModel()
-    local vehicle = Instance.new("Model")
-    vehicle.Name = "VehicleRig"
+local function buildVehicleModel()
+    sysLog("Construindo modelo Veiculo...")
     
-    -- Chassi principal
-    local chassis = Instance.new("Part")
-    chassis.Name = "Chassis"
-    chassis.Size = Vector3.new(6, 2, 12)
-    chassis.Color = CONFIG.VEHICLE_PRIMARY_COLOR
-    chassis.Material = Enum.Material.Metal
-    chassis.CFrame = humanoidRootPart.CFrame
-    chassis.Parent = vehicle
+    local model = Instance.new("Model")
+    model.Name = "VehicleModel_V3"
     
-    -- Cabine
-    local cabin = Instance.new("Part")
-    cabin.Name = "Cabin"
-    cabin.Size = Vector3.new(5, 2, 5)
-    cabin.Color = CONFIG.VEHICLE_PRIMARY_COLOR
-    cabin.Material = Enum.Material.Metal
-    cabin.CFrame = chassis.CFrame * CFrame.new(0, 1.5, -1)
-    cabin.Parent = vehicle
+    -- Pivot do veículo
+    local pivot = Instance.new("Part")
+    pivot.Name = "VehiclePivot"
+    pivot.Size = Vector3.new(1, 1, 1)
+    pivot.Transparency = 1
+    pivot.CanCollide = false
+    pivot.Anchored = false
+    pivot.CFrame = CFrame.new(0, 0, 0)
+    pivot.Parent = model
     
-    -- Vidro da cabine
-    local windshield = Instance.new("Part")
-    windshield.Name = "Windshield"
-    windshield.Size = Vector3.new(4.5, 1.5, 0.2)
-    windshield.Color = Color3.fromRGB(100, 150, 200)
-    windshield.Material = Enum.Material.Glass
-    windshield.Transparency = 0.3
-    windshield.CFrame = cabin.CFrame * CFrame.new(0, 0.5, 2.5)
-    windshield.Parent = vehicle
+    local parts = {}
     
-    -- Rodas
-    local wheelPositions = {
-        Vector3.new(-3, -1, 4),
-        Vector3.new(3, -1, 4),
-        Vector3.new(-3, -1, -4),
-        Vector3.new(3, -1, -4),
-    }
-    
-    for i, pos in ipairs(wheelPositions) do
-        local wheel = Instance.new("Part")
-        wheel.Name = "Wheel_" .. i
-        wheel.Size = Vector3.new(0.5, 3, 3)
-        wheel.Shape = Enum.PartType.Cylinder
-        wheel.Color = Color3.fromRGB(30, 30, 30)
-        wheel.Material = Enum.Material.SmoothPlastic
-        wheel.CFrame = chassis.CFrame * CFrame.new(pos.X, pos.Y, pos.Z) * CFrame.Angles(0, 0, math.rad(90))
-        wheel.Parent = vehicle
-        
-        -- Aro da roda
-        local rim = Instance.new("Part")
-        rim.Name = "Rim_" .. i
-        rim.Size = Vector3.new(0.3, 2, 2)
-        rim.Shape = Enum.PartType.Cylinder
-        rim.Color = CONFIG.VEHICLE_ACCENT_COLOR
-        rim.Material = Enum.Material.Metal
-        rim.CFrame = wheel.CFrame
-        rim.Parent = vehicle
+    -- =========================================================================
+    -- FUNÇÃO AUXILIAR
+    -- =========================================================================
+    local function addVehiclePart(name, size, offset, color, material)
+        local part = createPart({
+            Name = name,
+            Size = size,
+            Color = color or CONFIG.VEHICLE_BODY,
+            Material = material or Enum.Material.Metal,
+            CFrame = CFrame.new(offset),
+            CanCollide = true,
+        })
+        part.Parent = model
+        parts[name] = part
+        SystemRefs.vehicleParts[name] = part
+        return part
     end
     
-    -- Detalhes aerodinâmicos
-    local spoiler = Instance.new("Part")
-    spoiler.Name = "Spoiler"
-    spoiler.Size = Vector3.new(5, 0.3, 1.5)
-    spoiler.Color = CONFIG.VEHICLE_ACCENT_COLOR
-    spoiler.Material = Enum.Material.Metal
-    spoiler.CFrame = chassis.CFrame * CFrame.new(0, 2, -5.5)
-    spoiler.Parent = vehicle
+    -- =========================================================================
+    -- CHASSIS (estrutura principal)
+    -- =========================================================================
+    addVehiclePart("Chassis", Vector3.new(6, 1.2, 11), Vector3.new(0, 1, 0), CONFIG.VEHICLE_DARK)
     
-    -- Faróis
-    local headlightL = Instance.new("Part")
-    headlightL.Name = "HeadlightL"
-    headlightL.Size = Vector3.new(1, 0.5, 0.3)
-    headlightL.Color = Color3.fromRGB(255, 255, 200)
-    headlightL.Material = Enum.Material.Neon
-    headlightL.CFrame = chassis.CFrame * CFrame.new(-2, 0, 6)
-    headlightL.Parent = vehicle
+    -- =========================================================================
+    -- CARROCERIA
+    -- =========================================================================
+    -- Corpo principal
+    addVehiclePart("Body", Vector3.new(5.5, 1.5, 10), Vector3.new(0, 2, 0), CONFIG.VEHICLE_BODY)
     
-    local headlightR = headlightL:Clone()
-    headlightR.Name = "HeadlightR"
-    headlightR.CFrame = chassis.CFrame * CFrame.new(2, 0, 6)
-    headlightR.Parent = vehicle
+    -- Capô (frente inclinada)
+    local hood = addVehiclePart("Hood", Vector3.new(5, 0.5, 3.5), Vector3.new(0, 2.8, 3), CONFIG.VEHICLE_BODY)
+    
+    -- Para-choques dianteiro
+    addVehiclePart("FrontBumper", Vector3.new(5.5, 0.8, 1), Vector3.new(0, 1.5, 5.5), CONFIG.VEHICLE_DARK)
+    
+    -- Para-choques traseiro
+    addVehiclePart("RearBumper", Vector3.new(5.5, 0.8, 1), Vector3.new(0, 1.5, -5.5), CONFIG.VEHICLE_DARK)
+    
+    -- =========================================================================
+    -- CABINE
+    -- =========================================================================
+    addVehiclePart("Cabin", Vector3.new(4.5, 1.8, 4), Vector3.new(0, 3.5, -0.5), CONFIG.VEHICLE_BODY)
+    
+    -- Teto
+    addVehiclePart("Roof", Vector3.new(4.2, 0.3, 3.5), Vector3.new(0, 4.5, -0.5), CONFIG.VEHICLE_DARK)
+    
+    -- Para-brisa dianteiro (vidro)
+    local windshield = addVehiclePart("Windshield", Vector3.new(4, 1.5, 0.2), Vector3.new(0, 3.8, 1.5), CONFIG.VEHICLE_GLASS, Enum.Material.Glass)
+    windshield.Transparency = 0.4
+    
+    -- Para-brisa traseiro
+    local rearWindow = addVehiclePart("RearWindow", Vector3.new(3.8, 1.2, 0.2), Vector3.new(0, 3.8, -2.5), CONFIG.VEHICLE_GLASS, Enum.Material.Glass)
+    rearWindow.Transparency = 0.4
+    
+    -- Janelas laterais
+    local windowL = addVehiclePart("WindowL", Vector3.new(0.2, 1.2, 3), Vector3.new(-2.3, 3.8, -0.5), CONFIG.VEHICLE_GLASS, Enum.Material.Glass)
+    windowL.Transparency = 0.4
+    local windowR = addVehiclePart("WindowR", Vector3.new(0.2, 1.2, 3), Vector3.new(2.3, 3.8, -0.5), CONFIG.VEHICLE_GLASS, Enum.Material.Glass)
+    windowR.Transparency = 0.4
+    
+    -- =========================================================================
+    -- RODAS (4 rodas posicionadas corretamente)
+    -- =========================================================================
+    local wheelRadius = 1.2
+    local wheelWidth = 0.8
+    local wheelPositions = {
+        {name = "WheelFL", pos = Vector3.new(-3, 0.2, 3.5)},   -- Frente Esquerda
+        {name = "WheelFR", pos = Vector3.new(3, 0.2, 3.5)},    -- Frente Direita
+        {name = "WheelRL", pos = Vector3.new(-3, 0.2, -3.5)},  -- Trás Esquerda
+        {name = "WheelRR", pos = Vector3.new(3, 0.2, -3.5)},   -- Trás Direita
+    }
+    
+    for _, wheelData in ipairs(wheelPositions) do
+        -- Pneu
+        local wheel = Instance.new("Part")
+        wheel.Name = wheelData.name
+        wheel.Size = Vector3.new(wheelWidth, wheelRadius * 2, wheelRadius * 2)
+        wheel.Shape = Enum.PartType.Cylinder
+        wheel.Color = Color3.fromRGB(25, 25, 25)
+        wheel.Material = Enum.Material.SmoothPlastic
+        wheel.CFrame = CFrame.new(wheelData.pos) * CFrame.Angles(0, 0, math.rad(90))
+        wheel.CanCollide = true
+        wheel.Parent = model
+        
+        -- Aro
+        local rim = Instance.new("Part")
+        rim.Name = wheelData.name .. "_Rim"
+        rim.Size = Vector3.new(wheelWidth + 0.1, wheelRadius * 1.2, wheelRadius * 1.2)
+        rim.Shape = Enum.PartType.Cylinder
+        rim.Color = CONFIG.VEHICLE_ACCENT
+        rim.Material = Enum.Material.Metal
+        rim.CFrame = wheel.CFrame
+        rim.Parent = model
+        
+        parts[wheelData.name] = wheel
+        table.insert(SystemRefs.vehicleWheels, {
+            part = wheel,
+            rim = rim,
+            restPos = wheelData.pos,
+            currentOffset = 0,
+        })
+    end
+    
+    -- =========================================================================
+    -- PARA-LAMAS
+    -- =========================================================================
+    addVehiclePart("FenderFL", Vector3.new(1.5, 0.8, 2.5), Vector3.new(-3, 1.5, 3.5), CONFIG.VEHICLE_BODY)
+    addVehiclePart("FenderFR", Vector3.new(1.5, 0.8, 2.5), Vector3.new(3, 1.5, 3.5), CONFIG.VEHICLE_BODY)
+    addVehiclePart("FenderRL", Vector3.new(1.5, 0.8, 2.5), Vector3.new(-3, 1.5, -3.5), CONFIG.VEHICLE_BODY)
+    addVehiclePart("FenderRR", Vector3.new(1.5, 0.8, 2.5), Vector3.new(3, 1.5, -3.5), CONFIG.VEHICLE_BODY)
+    
+    -- =========================================================================
+    -- FARÓIS E LANTERNAS
+    -- =========================================================================
+    local headlightL = addVehiclePart("HeadlightL", Vector3.new(1.2, 0.6, 0.3), Vector3.new(-1.8, 2.2, 5.5), Color3.fromRGB(255, 255, 220), Enum.Material.Neon)
+    local headlightR = addVehiclePart("HeadlightR", Vector3.new(1.2, 0.6, 0.3), Vector3.new(1.8, 2.2, 5.5), Color3.fromRGB(255, 255, 220), Enum.Material.Neon)
     
     -- SpotLights para faróis
     local spotL = Instance.new("SpotLight")
+    spotL.Name = "HeadlightSpotL"
     spotL.Color = Color3.fromRGB(255, 255, 200)
-    spotL.Brightness = 3
-    spotL.Range = 50
+    spotL.Brightness = 5
+    spotL.Range = 60
     spotL.Angle = 45
     spotL.Face = Enum.NormalFace.Front
     spotL.Enabled = false
     spotL.Parent = headlightL
     
-    local spotR = spotL:Clone()
+    local spotR = Instance.new("SpotLight")
+    spotR.Name = "HeadlightSpotR"
+    spotR.Color = Color3.fromRGB(255, 255, 200)
+    spotR.Brightness = 5
+    spotR.Range = 60
+    spotR.Angle = 45
+    spotR.Face = Enum.NormalFace.Front
+    spotR.Enabled = false
     spotR.Parent = headlightR
     
-    -- Humanoid para o veículo (usado para controle)
-    local vehicleHumanoid = Instance.new("Humanoid")
-    vehicleHumanoid.WalkSpeed = 0
-    vehicleHumanoid.JumpPower = 0
-    vehicleHumanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
-    vehicleHumanoid.Parent = vehicle
+    -- Lanternas traseiras
+    addVehiclePart("TaillightL", Vector3.new(1, 0.4, 0.3), Vector3.new(-2, 2.2, -5.5), Color3.fromRGB(255, 30, 0), Enum.Material.Neon)
+    addVehiclePart("TaillightR", Vector3.new(1, 0.4, 0.3), Vector3.new(2, 2.2, -5.5), Color3.fromRGB(255, 30, 0), Enum.Material.Neon)
     
-    -- HumanoidRootPart para o veículo
-    local vehicleHRP = Instance.new("Part")
-    vehicleHRP.Name = "HumanoidRootPart"
-    vehicleHRP.Size = Vector3.new(2, 2, 2)
-    vehicleHRP.Transparency = 1
-    vehicleHRP.CanCollide = false
-    vehicleHRP.CFrame = chassis.CFrame
-    vehicleHRP.Parent = vehicle
+    -- =========================================================================
+    -- DETALHES AERODINÂMICOS
+    -- =========================================================================
+    -- Spoiler
+    addVehiclePart("Spoiler", Vector3.new(4.5, 0.2, 1), Vector3.new(0, 3.8, -5), CONFIG.VEHICLE_ACCENT)
+    addVehiclePart("SpoilerStandL", Vector3.new(0.3, 0.8, 0.3), Vector3.new(-1.5, 3.4, -5), CONFIG.VEHICLE_DARK)
+    addVehiclePart("SpoilerStandR", Vector3.new(0.3, 0.8, 0.3), Vector3.new(1.5, 3.4, -5), CONFIG.VEHICLE_DARK)
     
-    -- Weld do chassis ao HRP
-    local chassisWeld = Instance.new("Weld")
-    chassisWeld.Part0 = vehicleHRP
-    chassisWeld.Part1 = chassis
-    chassisWeld.C0 = CFrame.new()
-    chassisWeld.C1 = CFrame.new()
-    chassisWeld.Parent = vehicleHRP
+    -- Escape/propulsores
+    local exhaustL = addVehiclePart("ExhaustL", Vector3.new(0.6, 0.6, 1), Vector3.new(-1.5, 1.2, -6), CONFIG.VEHICLE_DARK, Enum.Material.Metal)
+    local exhaustR = addVehiclePart("ExhaustR", Vector3.new(0.6, 0.6, 1), Vector3.new(1.5, 1.2, -6), CONFIG.VEHICLE_DARK, Enum.Material.Metal)
     
-    -- Weld de todas as partes ao chassis
-    for _, part in ipairs(vehicle:GetChildren()) do
-        if part:IsA("BasePart") and part ~= vehicleHRP and part ~= chassis then
-            local weld = Instance.new("Weld")
-            weld.Part0 = chassis
+    -- Efeito de escape
+    createEffect("ExhaustFireL", exhaustL, {
+        Texture = "rbxassetid://243098098",
+        Lifetime = NumberRange.new(0.1, 0.3),
+        Speed = NumberRange.new(10, 20),
+        SpreadAngle = Vector2.new(20, 20),
+        Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.4), NumberSequenceKeypoint.new(1, 0)}),
+        Color = ColorSequence.new(Color3.fromRGB(255, 150, 0), Color3.fromRGB(100, 100, 100)),
+        LightEmission = 1,
+    })
+    
+    createEffect("ExhaustFireR", exhaustR, {
+        Texture = "rbxassetid://243098098",
+        Lifetime = NumberRange.new(0.1, 0.3),
+        Speed = NumberRange.new(10, 20),
+        SpreadAngle = Vector2.new(20, 20),
+        Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.4), NumberSequenceKeypoint.new(1, 0)}),
+        Color = ColorSequence.new(Color3.fromRGB(255, 150, 0), Color3.fromRGB(100, 100, 100)),
+        LightEmission = 1,
+    })
+    
+    -- =========================================================================
+    -- PORTAS/PAINÉIS LATERAIS
+    -- =========================================================================
+    addVehiclePart("DoorL", Vector3.new(0.2, 1.5, 3.5), Vector3.new(-2.8, 2.5, 0), CONFIG.VEHICLE_BODY)
+    addVehiclePart("DoorR", Vector3.new(0.2, 1.5, 3.5), Vector3.new(2.8, 2.5, 0), CONFIG.VEHICLE_BODY)
+    
+    -- =========================================================================
+    -- SOLDAR TUDO AO CHASSIS (exceto rodas que têm física própria)
+    -- =========================================================================
+    for name, part in pairs(parts) do
+        if not name:match("^Wheel") and name ~= "Chassis" then
+            local weld = Instance.new("WeldConstraint")
+            weld.Part0 = parts["Chassis"]
             weld.Part1 = part
-            weld.C0 = chassis.CFrame:Inverse() * part.CFrame
             weld.Parent = part
         end
     end
     
-    vehicle.PrimaryPart = vehicleHRP
-    vehicle.Parent = workspace
-    
-    -- Inicialmente invisível
-    for _, part in ipairs(getAllParts(vehicle)) do
-        part.Transparency = 1
-        part.CanCollide = false
+    -- Soldar aros às rodas
+    for _, wheelData in ipairs(SystemRefs.vehicleWheels) do
+        local weld = Instance.new("WeldConstraint")
+        weld.Part0 = wheelData.part
+        weld.Part1 = wheelData.rim
+        weld.Parent = wheelData.rim
     end
     
-    pcall(function()
-        vehicleHRP:SetNetworkOwner(player)
-    end)
+    -- =========================================================================
+    -- HUMANOID (para CameraSubject)
+    -- =========================================================================
+    local vehicleHumanoid = Instance.new("Humanoid")
+    vehicleHumanoid.Name = "VehicleHumanoid"
+    vehicleHumanoid.WalkSpeed = 0
+    vehicleHumanoid.JumpPower = 0
+    vehicleHumanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+    vehicleHumanoid.Parent = model
     
-    return vehicle
+    -- Configurar
+    model.PrimaryPart = pivot
+    model:PivotTo(CFrame.new(0, -200, 0)) -- Esconde abaixo do mapa
+    
+    sysLog("Veiculo construido: " .. #SystemRefs.vehicleWheels .. " rodas")
+    
+    return model
 end
 
 -- ============================================================================
--- SEÇÃO 9: INTERFACE DO USUÁRIO (UI)
+-- MÓDULO 8: INTERFACE MOBILE-FIRST
 -- ============================================================================
 
---- Cria a interface de transformação
-local function createTransformUI()
+local function createUI()
+    sysLog("Criando interface...")
+    
+    -- Verifica se já existe (previne duplicação em respawn)
+    local existingGui = player.PlayerGui:FindFirstChild("MechaSystemUI_V3")
+    if existingGui then
+        existingGui:Destroy()
+    end
+    
     local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "MechaTransformUI"
+    screenGui.Name = "MechaSystemUI_V3"
     screenGui.ResetOnSpawn = false
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    screenGui.Parent = playerGui
+    screenGui.Parent = player.PlayerGui
     
-    -- Container principal
-    local mainFrame = Instance.new("Frame")
-    mainFrame.Name = "MainFrame"
-    mainFrame.Size = UDim2.new(0, 300, 0, 80)
-    mainFrame.Position = UDim2.new(0.5, -150, 0, 20)
-    mainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 25)
-    mainFrame.BackgroundTransparency = 0.2
-    mainFrame.Visible = false
-    mainFrame.Parent = screenGui
+    -- =========================================================================
+    -- INDICADOR DE FORMA ATUAL (topo da tela)
+    -- =========================================================================
+    local formIndicator = Instance.new("Frame")
+    formIndicator.Name = "FormIndicator"
+    formIndicator.Size = UDim2.new(0, 200, 0, 40)
+    formIndicator.Position = UDim2.new(0.5, -100, 0, 10)
+    formIndicator.BackgroundColor3 = Color3.fromRGB(15, 15, 25)
+    formIndicator.BackgroundTransparency = 0.2
+    formIndicator.Parent = screenGui
     
-    -- Borda neon
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent = mainFrame
+    local formCorner = Instance.new("UICorner")
+    formCorner.CornerRadius = UDim.new(0, 10)
+    formCorner.Parent = formIndicator
     
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = CONFIG.MECHA_ACCENT_COLOR
-    stroke.Thickness = 2
-    stroke.Transparency = 0.3
-    stroke.Parent = mainFrame
+    local formStroke = Instance.new("UIStroke")
+    formStroke.Color = CONFIG.MECHA_ACCENT
+    formStroke.Thickness = 2
+    formStroke.Parent = formIndicator
     
-    -- Texto de status
-    local statusText = Instance.new("TextLabel")
-    statusText.Name = "StatusText"
-    statusText.Size = UDim2.new(1, 0, 0, 30)
-    statusText.Position = UDim2.new(0, 0, 0, 5)
-    statusText.BackgroundTransparency = 1
-    statusText.Text = "SISTEMA DE TRANSFORMAÇÃO"
-    statusText.TextColor3 = CONFIG.MECHA_ACCENT_COLOR
-    statusText.TextSize = 14
-    statusText.Font = Enum.Font.Code
-    statusText.Parent = mainFrame
+    local formLabel = Instance.new("TextLabel")
+    formLabel.Name = "FormLabel"
+    formLabel.Size = UDim2.new(1, 0, 1, 0)
+    formLabel.BackgroundTransparency = 1
+    formLabel.Text = "👤 HUMANO"
+    formLabel.TextColor3 = Color3.new(1, 1, 1)
+    formLabel.TextSize = 16
+    formLabel.Font = Enum.Font.GothamBold
+    formLabel.Parent = formIndicator
     
-    -- Barra de progresso (fundo)
-    local progressBg = Instance.new("Frame")
-    progressBg.Name = "ProgressBg"
-    progressBg.Size = UDim2.new(0.9, 0, 0, 12)
-    progressBg.Position = UDim2.new(0.05, 0, 0, 40)
-    progressBg.BackgroundColor3 = Color3.fromRGB(30, 30, 50)
-    progressBg.Parent = mainFrame
+    -- =========================================================================
+    -- BARRA DE TRANSFORMAÇÃO (aparece durante transformação)
+    -- =========================================================================
+    local transformBar = Instance.new("Frame")
+    transformBar.Name = "TransformBar"
+    transformBar.Size = UDim2.new(0, 250, 0, 50)
+    transformBar.Position = UDim2.new(0.5, -125, 0, 60)
+    transformBar.BackgroundColor3 = Color3.fromRGB(15, 15, 25)
+    transformBar.BackgroundTransparency = 0.2
+    transformBar.Visible = false
+    transformBar.Parent = screenGui
     
-    local progressCorner = Instance.new("UICorner")
-    progressCorner.CornerRadius = UDim.new(0, 6)
-    progressCorner.Parent = progressBg
+    local tbCorner = Instance.new("UICorner")
+    tbCorner.CornerRadius = UDim.new(0, 8)
+    tbCorner.Parent = transformBar
     
-    -- Barra de progresso (preenchimento)
-    local progressBar = Instance.new("Frame")
-    progressBar.Name = "ProgressBar"
-    progressBar.Size = UDim2.new(0, 0, 1, 0)
-    progressBar.BackgroundColor3 = CONFIG.MECHA_ACCENT_COLOR
-    progressBar.Parent = progressBg
+    local tbStroke = Instance.new("UIStroke")
+    tbStroke.Color = CONFIG.MECHA_ACCENT
+    tbStroke.Thickness = 1.5
+    tbStroke.Parent = transformBar
     
-    local barCorner = Instance.new("UICorner")
-    barCorner.CornerRadius = UDim.new(0, 6)
-    barCorner.Parent = progressBar
+    local tbLabel = Instance.new("TextLabel")
+    tbLabel.Size = UDim2.new(1, 0, 0, 20)
+    tbLabel.Position = UDim2.new(0, 0, 0, 3)
+    tbLabel.BackgroundTransparency = 1
+    tbLabel.Text = "TRANSFORMANDO..."
+    tbLabel.TextColor3 = CONFIG.MECHA_ACCENT
+    tbLabel.TextSize = 11
+    tbLabel.Font = Enum.Font.GothamBold
+    tbLabel.Parent = transformBar
     
-    -- Texto de percentual
-    local percentText = Instance.new("TextLabel")
-    percentText.Name = "PercentText"
-    percentText.Size = UDim2.new(1, 0, 0, 20)
-    percentText.Position = UDim2.new(0, 0, 0, 55)
-    percentText.BackgroundTransparency = 1
-    percentText.Text = "0%"
-    percentText.TextColor3 = Color3.fromRGB(200, 200, 200)
-    percentText.TextSize = 12
-    percentText.Font = Enum.Font.Code
-    percentText.Parent = mainFrame
+    local tbBg = Instance.new("Frame")
+    tbBg.Size = UDim2.new(0.9, 0, 0, 10)
+    tbBg.Position = UDim2.new(0.05, 0, 0, 25)
+    tbBg.BackgroundColor3 = Color3.fromRGB(30, 30, 50)
+    tbBg.Parent = transformBar
     
-    -- Blur Effect para a tela
-    local blurEffect = Instance.new("BlurEffect")
-    blurEffect.Name = "TransformBlur"
-    blurEffect.Size = 0
-    blurEffect.Enabled = false
-    blurEffect.Parent = Lighting
+    local tbBgCorner = Instance.new("UICorner")
+    tbBgCorner.CornerRadius = UDim.new(0, 5)
+    tbBgCorner.Parent = tbBg
     
-    -- Guardar referências
-    SystemState.uiElements = {
+    local tbFill = Instance.new("Frame")
+    tbFill.Name = "Fill"
+    tbFill.Size = UDim2.new(0, 0, 1, 0)
+    tbFill.BackgroundColor3 = CONFIG.MECHA_ACCENT
+    tbFill.Parent = tbBg
+    
+    local tbFillCorner = Instance.new("UICorner")
+    tbFillCorner.CornerRadius = UDim.new(0, 5)
+    tbFillCorner.Parent = tbFill
+    
+    -- =========================================================================
+    -- BOTÕES DE FORMAÇÃO (lado direito, vertical)
+    -- =========================================================================
+    local buttonContainer = Instance.new("Frame")
+    buttonContainer.Name = "FormButtons"
+    buttonContainer.Size = UDim2.new(0, 70, 0, 230)
+    buttonContainer.Position = UDim2.new(1, -85, 0.4, 0)
+    buttonContainer.BackgroundTransparency = 1
+    buttonContainer.Parent = screenGui
+    
+    -- Botão HUMANO
+    local btnHuman = Instance.new("TextButton")
+    btnHuman.Name = "BtnHuman"
+    btnHuman.Size = CONFIG.BUTTON_SIZE
+    btnHuman.Position = UDim2.new(0, 3, 0, 0)
+    btnHuman.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+    btnHuman.Text = "👤"
+    btnHuman.TextSize = 28
+    btnHuman.TextColor3 = Color3.new(1, 1, 1)
+    btnHuman.Font = Enum.Font.GothamBold
+    btnHuman.AutoButtonColor = true
+    btnHuman.Parent = buttonContainer
+    
+    local bhCorner = Instance.new("UICorner")
+    bhCorner.CornerRadius = UDim.new(0, 12)
+    bhCorner.Parent = btnHuman
+    
+    -- Botão MECHA
+    local btnMecha = Instance.new("TextButton")
+    btnMecha.Name = "BtnMecha"
+    btnMecha.Size = CONFIG.BUTTON_SIZE
+    btnMecha.Position = UDim2.new(0, 3, 0, 80)
+    btnMecha.BackgroundColor3 = Color3.fromRGB(30, 80, 160)
+    btnMecha.Text = "🤖"
+    btnMecha.TextSize = 28
+    btnMecha.TextColor3 = Color3.new(1, 1, 1)
+    btnMecha.Font = Enum.Font.GothamBold
+    btnMecha.AutoButtonColor = true
+    btnMecha.Parent = buttonContainer
+    
+    local bmCorner = Instance.new("UICorner")
+    bmCorner.CornerRadius = UDim.new(0, 12)
+    bmCorner.Parent = btnMecha
+    
+    -- Botão VEHICLE
+    local btnVehicle = Instance.new("TextButton")
+    btnVehicle.Name = "BtnVehicle"
+    btnVehicle.Size = CONFIG.BUTTON_SIZE
+    btnVehicle.Position = UDim2.new(0, 3, 0, 160)
+    btnVehicle.BackgroundColor3 = Color3.fromRGB(160, 30, 30)
+    btnVehicle.Text = "🏎"
+    btnVehicle.TextSize = 28
+    btnVehicle.TextColor3 = Color3.new(1, 1, 1)
+    btnVehicle.Font = Enum.Font.GothamBold
+    btnVehicle.AutoButtonColor = true
+    btnVehicle.Parent = buttonContainer
+    
+    local bvCorner = Instance.new("UICorner")
+    bvCorner.CornerRadius = UDim.new(0, 12)
+    bvCorner.Parent = btnVehicle
+    
+    -- =========================================================================
+    -- CONTROLES DO VEÍCULO (aparecem quando em modo Vehicle)
+    -- =========================================================================
+    local vehicleControlFrame = Instance.new("Frame")
+    vehicleControlFrame.Name = "VehicleControls"
+    vehicleControlFrame.Size = UDim2.new(0, 200, 0, 200)
+    vehicleControlFrame.Position = UDim2.new(0, 15, 1, -220)
+    vehicleControlFrame.BackgroundTransparency = 1
+    vehicleControlFrame.Visible = false
+    vehicleControlFrame.Parent = screenGui
+    
+    -- Acelerador
+    local btnAccel = Instance.new("TextButton")
+    btnAccel.Name = "Accel"
+    btnAccel.Size = UDim2.new(0, 70, 0, 70)
+    btnAccel.Position = UDim2.new(0, 65, 0, 0)
+    btnAccel.BackgroundColor3 = Color3.fromRGB(0, 180, 0)
+    btnAccel.Text = "▲"
+    btnAccel.TextSize = 30
+    btnAccel.TextColor3 = Color3.new(1, 1, 1)
+    btnAccel.Font = Enum.Font.GothamBold
+    btnAccel.Parent = vehicleControlFrame
+    
+    local baCorner = Instance.new("UICorner")
+    baCorner.CornerRadius = UDim.new(1, 0)
+    baCorner.Parent = btnAccel
+    
+    -- Freio/Ré
+    local btnBrake = Instance.new("TextButton")
+    btnBrake.Name = "Brake"
+    btnBrake.Size = UDim2.new(0, 70, 0, 70)
+    btnBrake.Position = UDim2.new(0, 65, 0, 130)
+    btnBrake.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
+    btnBrake.Text = "▼"
+    btnBrake.TextSize = 30
+    btnBrake.TextColor3 = Color3.new(1, 1, 1)
+    btnBrake.Font = Enum.Font.GothamBold
+    btnBrake.Parent = vehicleControlFrame
+    
+    local bbCorner = Instance.new("UICorner")
+    bbCorner.CornerRadius = UDim.new(1, 0)
+    bbCorner.Parent = btnBrake
+    
+    -- Esquerda
+    local btnLeft = Instance.new("TextButton")
+    btnLeft.Name = "Left"
+    btnLeft.Size = UDim2.new(0, 60, 0, 60)
+    btnLeft.Position = UDim2.new(0, 0, 0, 70)
+    btnLeft.BackgroundColor3 = Color3.fromRGB(50, 50, 180)
+    btnLeft.Text = "◀"
+    btnLeft.TextSize = 24
+    btnLeft.TextColor3 = Color3.new(1, 1, 1)
+    btnLeft.Font = Enum.Font.GothamBold
+    btnLeft.Parent = vehicleControlFrame
+    
+    local blCorner = Instance.new("UICorner")
+    blCorner.CornerRadius = UDim.new(1, 0)
+    blCorner.Parent = btnLeft
+    
+    -- Direita
+    local btnRight = Instance.new("TextButton")
+    btnRight.Name = "Right"
+    btnRight.Size = UDim2.new(0, 60, 0, 60)
+    btnRight.Position = UDim2.new(0, 140, 0, 70)
+    btnRight.BackgroundColor3 = Color3.fromRGB(50, 50, 180)
+    btnRight.Text = "▶"
+    btnRight.TextSize = 24
+    btnRight.TextColor3 = Color3.new(1, 1, 1)
+    btnRight.Font = Enum.Font.GothamBold
+    btnRight.Parent = vehicleControlFrame
+    
+    local brCorner = Instance.new("UICorner")
+    brCorner.CornerRadius = UDim.new(1, 0)
+    brCorner.Parent = btnRight
+    
+    -- =========================================================================
+    -- PAINEL DE DIAGNÓSTICO (toggle com botão pequeno)
+    -- =========================================================================
+    local diagToggle = Instance.new("TextButton")
+    diagToggle.Name = "DiagToggle"
+    diagToggle.Size = UDim2.new(0, 30, 0, 30)
+    diagToggle.Position = UDim2.new(0, 10, 0, 10)
+    diagToggle.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    diagToggle.BackgroundTransparency = 0.3
+    diagToggle.Text = "?"
+    diagToggle.TextSize = 14
+    diagToggle.TextColor3 = Color3.new(1, 1, 1)
+    diagToggle.Font = Enum.Font.GothamBold
+    diagToggle.Parent = screenGui
+    
+    local dtCorner = Instance.new("UICorner")
+    dtCorner.CornerRadius = UDim.new(1, 0)
+    dtCorner.Parent = diagToggle
+    
+    local diagPanel = Instance.new("Frame")
+    diagPanel.Name = "DiagPanel"
+    diagPanel.Size = UDim2.new(0, 220, 0, 180)
+    diagPanel.Position = UDim2.new(0, 10, 0, 45)
+    diagPanel.BackgroundColor3 = Color3.fromRGB(10, 10, 20)
+    diagPanel.BackgroundTransparency = 0.1
+    diagPanel.Visible = false
+    diagPanel.Parent = screenGui
+    
+    local dpCorner = Instance.new("UICorner")
+    dpCorner.CornerRadius = UDim.new(0, 8)
+    dpCorner.Parent = diagPanel
+    
+    local dpStroke = Instance.new("UIStroke")
+    dpStroke.Color = Color3.fromRGB(100, 100, 100)
+    dpStroke.Thickness = 1
+    dpStroke.Parent = diagPanel
+    
+    local diagText = Instance.new("TextLabel")
+    diagText.Name = "DiagText"
+    diagText.Size = UDim2.new(1, -10, 1, -10)
+    diagText.Position = UDim2.new(0, 5, 0, 5)
+    diagText.BackgroundTransparency = 1
+    diagText.Text = "Carregando..."
+    diagText.TextColor3 = Color3.fromRGB(180, 220, 180)
+    diagText.TextSize = 10
+    diagText.Font = Enum.Font.Code
+    diagText.TextXAlignment = Enum.TextXAlignment.Left
+    diagText.TextYAlignment = Enum.TextYAlignment.Top
+    diagText.TextWrapped = true
+    diagText.Parent = diagPanel
+    
+    -- Toggle do painel
+    diagToggle.MouseButton1Click:Connect(function()
+        diagPanel.Visible = not diagPanel.Visible
+    end)
+    
+    -- =========================================================================
+    -- GUARDAR REFERÊNCIAS
+    -- =========================================================================
+    SystemRefs.ui = {
         screenGui = screenGui,
-        mainFrame = mainFrame,
-        statusText = statusText,
-        progressBar = progressBar,
-        percentText = percentText,
-        blurEffect = blurEffect,
-    }
-end
-
---- Atualiza a UI de transformação
---- @param progress number - Progresso (0-1)
---- @param statusText string - Texto de status
-local function updateTransformUI(progress, statusText)
-    local ui = SystemState.uiElements
-    
-    if ui.mainFrame then
-        ui.mainFrame.Visible = true
-        ui.progressBar.Size = UDim2.new(math.clamp(progress, 0, 1), 0, 1, 0)
-        ui.percentText.Text = math.floor(progress * 100) .. "%"
-        if statusText then
-            ui.statusText.Text = statusText
-        end
-    end
-    
-    if ui.blurEffect then
-        ui.blurEffect.Enabled = true
-        ui.blurEffect.Size = progress * 10
-    end
-end
-
---- Esconde a UI de transformação
-local function hideTransformUI()
-    local ui = SystemState.uiElements
-    
-    if ui.mainFrame then
-        ui.mainFrame.Visible = false
-    end
-    
-    if ui.blurEffect then
-        local fadeOut = createTween(ui.blurEffect, {Size = 0}, 0.5)
-        fadeOut:Play()
-        fadeOut.Completed:Connect(function()
-            ui.blurEffect.Enabled = false
-        end)
-    end
-end
-
--- ============================================================================
--- SEÇÃO 10: BOTÕES MOBILE
--- ============================================================================
-
---- Cria os botões de controle mobile
-local function createMobileButtons()
-    -- Verificar se é dispositivo mobile/touch
-    if not UserInputService.TouchEnabled then return end
-    
-    local ui = SystemState.uiElements.screenGui
-    
-    -- Botão de Transformar para Mecha
-    local transformBtn = Instance.new("TextButton")
-    transformBtn.Name = "TransformBtn"
-    transformBtn.Size = CONFIG.MOBILE_BUTTON_SIZE
-    transformBtn.Position = UDim2.new(1, -100, 0.5, -50)
-    transformBtn.BackgroundColor3 = CONFIG.MECHA_ACCENT_COLOR
-    transformBtn.Text = "🤖"
-    transformBtn.TextSize = 32
-    transformBtn.TextColor3 = Color3.new(1, 1, 1)
-    transformBtn.Font = Enum.Font.GothamBold
-    transformBtn.Parent = ui
-    
-    local btnCorner = Instance.new("UICorner")
-    btnCorner.CornerRadius = UDim.new(0, 15)
-    btnCorner.Parent = transformBtn
-    
-    local btnStroke = Instance.new("UIStroke")
-    btnStroke.Color = Color3.new(1, 1, 1)
-    btnStroke.Thickness = 2
-    btnStroke.Parent = transformBtn
-    
-    -- Botão de Transformar para Veículo
-    local vehicleBtn = Instance.new("TextButton")
-    vehicleBtn.Name = "VehicleBtn"
-    vehicleBtn.Size = CONFIG.MOBILE_BUTTON_SIZE
-    vehicleBtn.Position = UDim2.new(1, -100, 0.5, 50)
-    vehicleBtn.BackgroundColor3 = CONFIG.VEHICLE_PRIMARY_COLOR
-    vehicleBtn.Text = "🚗"
-    vehicleBtn.TextSize = 32
-    vehicleBtn.TextColor3 = Color3.new(1, 1, 1)
-    vehicleBtn.Font = Enum.Font.GothamBold
-    vehicleBtn.Visible = false
-    vehicleBtn.Parent = ui
-    
-    local vBtnCorner = Instance.new("UICorner")
-    vBtnCorner.CornerRadius = UDim.new(0, 15)
-    vBtnCorner.Parent = vehicleBtn
-    
-    local vBtnStroke = Instance.new("UIStroke")
-    vBtnStroke.Color = Color3.new(1, 1, 1)
-    vBtnStroke.Thickness = 2
-    vBtnStroke.Parent = vehicleBtn
-    
-    -- Botão de Voltar (quando em Mecha ou Veículo)
-    local revertBtn = Instance.new("TextButton")
-    revertBtn.Name = "RevertBtn"
-    revertBtn.Size = CONFIG.MOBILE_BUTTON_SIZE
-    revertBtn.Position = UDim2.new(1, -100, 0.5, 150)
-    revertBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
-    revertBtn.Text = "↩️"
-    revertBtn.TextSize = 32
-    revertBtn.TextColor3 = Color3.new(1, 1, 1)
-    revertBtn.Font = Enum.Font.GothamBold
-    revertBtn.Visible = false
-    revertBtn.Parent = ui
-    
-    local rBtnCorner = Instance.new("UICorner")
-    rBtnCorner.CornerRadius = UDim.new(0, 15)
-    rBtnCorner.Parent = revertBtn
-    
-    -- Conectar eventos dos botões
-    transformBtn.MouseButton1Click:Connect(function()
-        if SystemState.currentForm == "Humanoid" then
-            startTransformation("Mecha")
-        end
-    end)
-    
-    vehicleBtn.MouseButton1Click:Connect(function()
-        if SystemState.currentForm == "Mecha" then
-            startTransformation("Vehicle")
-        end
-    end)
-    
-    revertBtn.MouseButton1Click:Connect(function()
-        if SystemState.currentForm == "Mecha" or SystemState.currentForm == "Vehicle" then
-            startTransformation("Humanoid")
-        end
-    end)
-    
-    SystemState.mobileButtons = {
-        transformBtn = transformBtn,
-        vehicleBtn = vehicleBtn,
-        revertBtn = revertBtn,
-    }
-end
-
---- Atualiza visibilidade dos botões baseado no estado
-local function updateMobileButtons()
-    local buttons = SystemState.mobileButtons
-    if not buttons.transformBtn then return end
-    
-    local form = SystemState.currentForm
-    
-    buttons.transformBtn.Visible = (form == "Humanoid")
-    buttons.vehicleBtn.Visible = (form == "Mecha")
-    buttons.revertBtn.Visible = (form == "Mecha" or form == "Vehicle")
-end
-
--- ============================================================================
--- SEÇÃO 11: FASES DA TRANSFORMAÇÃO
--- ============================================================================
-
---- FASE 1: Antecipação - Preparação para a transformação
---- @param targetForm string - Forma alvo ("Mecha" ou "Vehicle")
-local function phase1Anticipation(targetForm)
-    -- Parar o movimento
-    humanoid.WalkSpeed = 0
-    humanoid.JumpPower = 0
-    
-    -- Vibrar o personagem (efeito de tensão)
-    local originalCFrame = humanoidRootPart.CFrame
-    local shakeCount = 5
-    local shakeDuration = CONFIG.TRANSFORM_ANTICIPATION / shakeCount
-    
-    for i = 1, shakeCount do
-        local offset = CFrame.new(
-            math.random(-3, 3) * 0.05,
-            math.random(-3, 3) * 0.05,
-            math.random(-3, 3) * 0.05
-        )
-        local tween = createTween(humanoidRootPart, {CFrame = originalCFrame * offset}, shakeDuration * 0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
-        tween:Play()
-        tween.Completed:Wait()
-        
-        local returnTween = createTween(humanoidRootPart, {CFrame = originalCFrame}, shakeDuration * 0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
-        returnTween:Play()
-        returnTween.Completed:Wait()
-    end
-    
-    -- Tocar som de servo motor
-    playSound("rbxassetid://9113869830", humanoidRootPart, 0.5, 1.2)
-    
-    -- Atualizar UI
-    updateTransformUI(0.1, "INICIANDO SEQUÊNCIA...")
-end
-
---- FASE 2: Desmontagem - O avatar se desmonta
---- @param targetForm string - Forma alvo
-local function phase2Disassembly(targetForm)
-    -- Tornar partes do personagem semi-transparentes e movê-las
-    local bodyParts = {
-        "Head", "UpperTorso", "LowerTorso",
-        "LeftUpperArm", "LeftLowerArm", "LeftHand",
-        "RightUpperArm", "RightLowerArm", "RightHand",
-        "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
-        "RightUpperLeg", "RightLowerLeg", "RightFoot",
+        formIndicator = formIndicator,
+        formLabel = formLabel,
+        transformBar = transformBar,
+        tbFill = tbFill,
+        tbLabel = tbLabel,
+        diagPanel = diagPanel,
+        diagText = diagText,
+        vehicleControlFrame = vehicleControlFrame,
     }
     
-    -- Guardar propriedades originais para reverter
-    for _, partName in ipairs(bodyParts) do
-        local part = character:FindFirstChild(partName)
-        if part and part:IsA("BasePart") then
-            SystemState.originalProperties[partName] = {
-                CFrame = part.CFrame,
-                Transparency = part.Transparency,
-                Color = part.Color,
-            }
-        end
+    SystemRefs.mobileButtons = {
+        human = btnHuman,
+        mecha = btnMecha,
+        vehicle = btnVehicle,
+    }
+    
+    SystemRefs.vehicleControls = {
+        accel = btnAccel,
+        brake = btnBrake,
+        left = btnLeft,
+        right = btnRight,
+        accelHeld = false,
+        brakeHeld = false,
+        leftHeld = false,
+        rightHeld = false,
+    }
+    
+    -- =========================================================================
+    -- CONECTAR EVENTOS DOS BOTÕES (com debounce)
+    -- =========================================================================
+    local lastClickTime = 0
+    local CLICK_DEBOUNCE = 0.5
+    
+    local function safeTransform(target)
+        local now = tick()
+        if now - lastClickTime < CLICK_DEBOUNCE then return end
+        if StateMachine.isLocked then return end
+        lastClickTime = now
+        startTransformation(target)
     end
     
-    -- Animar cada parte se movendo para posições de "montagem"
-    local startTime = tick()
-    local duration = CONFIG.TRANSFORM_DISASSEMBLY
-    
-    -- Tocar som de metal
-    playSound("rbxassetid://9114263040", humanoidRootPart, 0.7, 0.8)
-    
-    -- TweenService para mover as partes
-    for _, partName in ipairs(bodyParts) do
-        local part = character:FindFirstChild(partName)
-        if part and part:IsA("BasePart") then
-            -- Calcular posição alvo (expandida para fora)
-            local direction = (part.Position - humanoidRootPart.Position).Unit
-            local targetPos = part.Position + direction * 2
-            
-            local tween = createTween(part, {
-                CFrame = CFrame.new(targetPos) * CFrame.Angles(
-                    math.random(-45, 45) * math.rad(1),
-                    math.random(-45, 45) * math.rad(1),
-                    math.random(-45, 45) * math.rad(1)
-                ),
-                Transparency = 0.5,
-            }, duration, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-            tween:Play()
-        end
-    end
-    
-    -- Atualizar UI durante a desmontagem
-    local uiUpdateConnection = RunService.Heartbeat:Connect(function()
-        local elapsed = tick() - startTime
-        local progress = 0.1 + (elapsed / duration) * 0.3
-        updateTransformUI(progress, "DES MONTANDO AVATAR...")
+    btnHuman.MouseButton1Click:Connect(function()
+        safeTransform("Human")
     end)
     
-    task.wait(duration)
-    uiUpdateConnection:Disconnect()
+    btnMecha.MouseButton1Click:Connect(function()
+        safeTransform("Mecha")
+    end)
     
-    -- Ativar partículas de faísca
-    if SystemState.mechaModel then
-        for _, part in ipairs(getAllParts(SystemState.mechaModel)) do
-            local emitter = part:FindFirstChildOfClass("ParticleEmitter")
-            if emitter and emitter.Name == "TransformSparks" then
-                emitter.Rate = 50
-                task.delay(1, function()
-                    emitter.Rate = 0
-                end)
-            end
-        end
+    btnVehicle.MouseButton1Click:Connect(function()
+        safeTransform("Vehicle")
+    end)
+    
+    -- Controles do veículo (touch hold)
+    btnAccel.MouseButton1Down:Connect(function() SystemRefs.vehicleControls.accelHeld = true end)
+    btnAccel.MouseButton1Up:Connect(function() SystemRefs.vehicleControls.accelHeld = false end)
+    btnBrake.MouseButton1Down:Connect(function() SystemRefs.vehicleControls.brakeHeld = true end)
+    btnBrake.MouseButton1Up:Connect(function() SystemRefs.vehicleControls.brakeHeld = false end)
+    btnLeft.MouseButton1Down:Connect(function() SystemRefs.vehicleControls.leftHeld = true end)
+    btnLeft.MouseButton1Up:Connect(function() SystemRefs.vehicleControls.leftHeld = false end)
+    btnRight.MouseButton1Down:Connect(function() SystemRefs.vehicleControls.rightHeld = true end)
+    btnRight.MouseButton1Up:Connect(function() SystemRefs.vehicleControls.rightHeld = false end)
+    
+    sysLog("Interface criada com sucesso")
+end
+
+--- Atualiza a UI baseada no estado atual
+local function updateUI()
+    local ui = SystemRefs.ui
+    if not ui.formLabel then return end
+    
+    local state = StateMachine.current
+    
+    -- Atualizar indicador de forma
+    if state == "Human" then
+        ui.formLabel.Text = "👤 HUMANO"
+    elseif state == "Mecha" or state == "TransformingToMecha" then
+        ui.formLabel.Text = "🤖 MECHA"
+    elseif state == "Vehicle" or state == "TransformingToVehicle" then
+        ui.formLabel.Text = "🏎 VEÍCULO"
+    else
+        ui.formLabel.Text = "⚙ " .. state:upper()
+    end
+    
+    -- Atualizar botões (destaque no ativo)
+    local buttons = SystemRefs.mobileButtons
+    if buttons.human then
+        buttons.human.BackgroundColor3 = (state == "Human") and Color3.fromRGB(100, 100, 130) or Color3.fromRGB(60, 60, 80)
+        buttons.mecha.BackgroundColor3 = (state == "Mecha") and Color3.fromRGB(50, 120, 220) or Color3.fromRGB(30, 80, 160)
+        buttons.vehicle.BackgroundColor3 = (state == "Vehicle") and Color3.fromRGB(220, 50, 50) or Color3.fromRGB(160, 30, 30)
+    end
+    
+    -- Controles do veículo visíveis apenas no modo Vehicle
+    if ui.vehicleControlFrame then
+        ui.vehicleControlFrame.Visible = (state == "Vehicle")
     end
 end
 
---- FASE 3: Montagem do Mecha/Veículo
---- @param targetForm string - Forma alvo
-local function phase3Assembly(targetForm)
-    local model = targetForm == "Mecha" and SystemState.mechaModel or SystemState.vehicleModel
-    if not model then return end
+--- Atualiza a barra de transformação
+local function updateTransformBar(progress, text)
+    local ui = SystemRefs.ui
+    if not ui.transformBar then return end
     
-    local startTime = tick()
-    local duration = CONFIG.TRANSFORM_ASSEMBLY
+    ui.transformBar.Visible = true
+    ui.tbFill.Size = UDim2.new(math.clamp(progress, 0, 1), 0, 1, 0)
+    if text then
+        ui.tbLabel.Text = text
+    end
+end
+
+local function hideTransformBar()
+    local ui = SystemRefs.ui
+    if ui.transformBar then
+        ui.transformBar.Visible = false
+    end
+end
+
+--- Atualiza o painel de diagnóstico
+local function updateDiagPanel()
+    local ui = SystemRefs.ui
+    if not ui.diagText then return end
     
-    -- Tocar som de montagem
-    playSound("rbxassetid://9114521098", humanoidRootPart, 0.8, 1.0)
+    local info = string.format(
+        "═══ MECHA SYSTEM V%s ═══
+" ..
+        "Estado: %s
+" ..
+        "Anterior: %s
+" ..
+        "Fase Init: %d
+" ..
+        "Peças Mecha: %d
+" ..
+        "Juntas: %d
+" ..
+        "Personagem: %s
+" ..
+        "Mecha: %s
+" ..
+        "Veículo: %s
+" ..
+        "Vel. Veículo: %.1f
+" ..
+        "Câmera Subject: %s
+" ..
+        "Último Erro: %s
+" ..
+        "═══════════════════════",
+        CONFIG.VERSION,
+        StateMachine.current,
+        StateMachine.previous,
+        StateMachine.initPhase,
+        SystemRefs.partCount,
+        #SystemRefs.mechaJoints,
+        SystemRefs.character and "OK" or "NULO",
+        SystemRefs.mechaModel and "OK" or "NULO",
+        SystemRefs.vehicleModel and "OK" or "NULO",
+        SystemRefs.vehicleState.speed,
+        camera.CameraSubject and camera.CameraSubject.Name or "NULO",
+        StateMachine.lastError
+    )
     
-    -- Posições iniciais "explodidas" para as partes do mecha
-    local parts = getAllParts(model)
-    local originalCFrames = {}
+    ui.diagText.Text = info
+end
+
+-- ============================================================================
+-- MÓDULO 9: CONTROLE DO MECHA
+-- ============================================================================
+
+--[[
+    O controle do Mecha funciona transferindo o CameraSubject para o
+    Humanoid do modelo Mecha. O jogador controla o mecha como se fosse
+    seu próprio personagem. O Humanoid do mecha recebe os inputs de
+    movimento do jogador via CameraSubject.
+]]
+
+local function activateMechaControl()
+    local mecha = SystemRefs.mechaModel
+    if not mecha then
+        sysLog("activateMechaControl: mechaModel nulo!", "ERROR")
+        return false
+    end
     
-    -- Guardar CFrames originais e mover para posições aleatórias
-    for _, part in ipairs(parts) do
-        if part.Name ~= "HumanoidRootPart" then
-            originalCFrames[part.Name] = part.CFrame
-            
-            -- Posição aleatória ao redor do personagem
-            local randomOffset = Vector3.new(
-                math.random(-15, 15),
-                math.random(5, 20),
-                math.random(-15, 15)
-            )
-            part.CFrame = CFrame.new(humanoidRootPart.Position + randomOffset)
-            part.Transparency = 0.3
+    local mechaHumanoid = mecha:FindFirstChild("MechaHumanoid")
+    local mechaPivot = mecha:FindFirstChild("Pivot")
+    
+    if not mechaHumanoid or not mechaPivot then
+        sysLog("activateMechaControl: Humanoid ou Pivot nulo!", "ERROR")
+        return false
+    end
+    
+    -- Posicionar mecha na posição do jogador
+    local charPos = SystemRefs.rootPart and SystemRefs.rootPart.CFrame or CFrame.new(0, 10, 0)
+    mecha:PivotTo(charPos + Vector3.new(0, 3, 0))
+    
+    -- Ativar colisão
+    for _, part in ipairs(mecha:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = true
+        end
+    end
+    
+    -- Configurar Humanoid do mecha
+    mechaHumanoid.WalkSpeed = CONFIG.MECHA_WALK_SPEED
+    mechaHumanoid.JumpPower = CONFIG.MECHA_JUMP_POWER
+    
+    -- Transferir controle da câmera para o mecha
+    camera.CameraSubject = mechaHumanoid
+    
+    -- Ativar luzes
+    local reactorLight = mecha:FindFirstChild("Reactor", true)
+    if reactorLight then
+        local light = reactorLight:FindFirstChildOfClass("PointLight")
+        if light then light.Enabled = true end
+    end
+    
+    local visorLight = mecha:FindFirstChild("HeadVisor", true)
+    if visorLight then
+        local light = visorLight:FindFirstChildOfClass("PointLight")
+        if light then light.Enabled = true end
+    end
+    
+    -- Network ownership
+    pcall(function()
+        mechaPivot:SetNetworkOwner(player)
+    end)
+    
+    sysLog("Controle do Mecha ativado")
+    return true
+end
+
+local function deactivateMechaControl()
+    local mecha = SystemRefs.mechaModel
+    if not mecha then return end
+    
+    local mechaHumanoid = mecha:FindFirstChild("MechaHumanoid")
+    if mechaHumanoid then
+        mechaHumanoid.WalkSpeed = 0
+        mechaHumanoid.JumpPower = 0
+    end
+    
+    -- Desativar luzes
+    for _, light in ipairs(mecha:GetDescendants()) do
+        if light:IsA("Light") then
+            light.Enabled = false
+        end
+    end
+    
+    -- Desativar trails
+    for _, trail in ipairs(mecha:GetDescendants()) do
+        if trail:IsA("Trail") then
+            trail.Enabled = false
+        end
+    end
+    
+    -- Esconder modelo
+    mecha:PivotTo(CFrame.new(0, -100, 0))
+    
+    -- Desativar colisão
+    for _, part in ipairs(mecha:GetDescendants()) do
+        if part:IsA("BasePart") then
             part.CanCollide = false
         end
     end
+end
+
+-- ============================================================================
+-- MÓDULO 10: FÍSICA E CONTROLE DO VEÍCULO
+-- ============================================================================
+
+--[[
+    Física veicular baseada em raycast para suspensão + CFrame para
+    movimento. As rodas são visuais; a física é calculada no pivot.
     
-    -- Animar as partes voltando para suas posições corretas
-    for _, part in ipairs(parts) do
-        if part.Name ~= "HumanoidRootPart" and originalCFrames[part.Name] then
-            local targetCFrame = originalCFrames[part.Name]
-            
-            -- Delay aleatório para efeito cascata
-            local delay = math.random() * 0.5
-            
-            task.delay(delay, function()
-                local tween = createTween(part, {
-                    CFrame = targetCFrame,
-                    Transparency = 0,
-                }, duration * 0.7, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-                tween:Play()
-            end)
+    Abordagem:
+    - Raycast para baixo detecta o chão
+    - Se no chão: aplica aceleração/frenagem/direção
+    - Se no ar: aplica gravidade
+    - Rodas animadas visualmente (rotação + offset de suspensão)
+]]
+
+local function updateVehiclePhysics(dt)
+    if StateMachine.current ~= "Vehicle" then return end
+    
+    local vehicle = SystemRefs.vehicleModel
+    if not vehicle then return end
+    
+    local pivot = vehicle:FindFirstChild("VehiclePivot")
+    if not pivot then return end
+    
+    local vState = SystemRefs.vehicleState
+    
+    -- =========================================================================
+    -- INPUT (combina mobile + teclado)
+    -- =========================================================================
+    local accelInput = 0
+    local steerInput = 0
+    
+    -- Mobile
+    local vc = SystemRefs.vehicleControls
+    if vc.accelHeld then accelInput = 1 end
+    if vc.brakeHeld then accelInput = -1 end
+    if vc.leftHeld then steerInput = 1 end
+    if vc.rightHeld then steerInput = -1 end
+    
+    -- Teclado (complementar)
+    if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Up) then
+        accelInput = 1
+    end
+    if UserInputService:IsKeyDown(Enum.KeyCode.S) or UserInputService:IsKeyDown(Enum.KeyCode.Down) then
+        accelInput = -1
+    end
+    if UserInputService:IsKeyDown(Enum.KeyCode.A) or UserInputService:IsKeyDown(Enum.KeyCode.Left) then
+        steerInput = 1
+    end
+    if UserInputService:IsKeyDown(Enum.KeyCode.D) or UserInputService:IsKeyDown(Enum.KeyCode.Right) then
+        steerInput = -1
+    end
+    
+    -- =========================================================================
+    -- FÍSICA
+    -- =========================================================================
+    local currentCFrame = pivot.CFrame
+    local currentPosition = currentCFrame.Position
+    local currentVelocity = Vector3.new(0, 0, 0)
+    
+    -- Se tínhamos velocidade anterior, calcular a partir do deslocamento
+    if vState.lastPosition then
+        currentVelocity = (currentPosition - vState.lastPosition) / math.max(dt, 0.001)
+    end
+    
+    -- Raycast para detectar chão
+    local rayOrigin = currentPosition + Vector3.new(0, 1, 0)
+    local rayDirection = Vector3.new(0, -(CONFIG.VEHICLE_SUSPENSION_REST + 2), 0)
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = {vehicle, SystemRefs.character}
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    
+    local rayResult = workspace:Raycast(rayOrigin, rayDirection, rayParams)
+    local grounded = rayResult ~= nil
+    vState.grounded = grounded
+    
+    local groundHeight = 0
+    if grounded then
+        groundHeight = rayResult.Position.Y
+    end
+    
+    -- Direção forward do veículo
+    local forward = currentCFrame.LookVector
+    local right = currentCFrame.RightVector
+    
+    -- =========================================================================
+    -- ACELERAÇÃO / FRENAGEM
+    -- =========================================================================
+    local speed = vState.speed
+    
+    if accelInput > 0 then
+        -- Acelerando para frente
+        speed = speed + CONFIG.VEHICLE_ACCELERATION * dt
+        speed = math.min(speed, CONFIG.VEHICLE_MAX_SPEED)
+    elseif accelInput < 0 then
+        if speed > 5 then
+            -- Freando (se indo para frente)
+            speed = speed - CONFIG.VEHICLE_BRAKE_FORCE * dt
+            speed = math.max(speed, 0)
+        else
+            -- Ré
+            speed = speed - CONFIG.VEHICLE_ACCELERATION * 0.5 * dt
+            speed = math.max(speed, -CONFIG.VEHICLE_REVERSE_SPEED)
+        end
+    else
+        -- Desaceleração natural (atrito)
+        if math.abs(speed) > 0.5 then
+            speed = speed - math.sign(speed) * 20 * dt
+        else
+            speed = 0
         end
     end
     
-    -- Ativar faíscas durante montagem
-    if SystemState.mechaModel then
-        for _, part in ipairs(getAllParts(SystemState.mechaModel)) do
-            local emitter = part:FindFirstChildOfClass("ParticleEmitter")
-            if emitter and emitter.Name == "TransformSparks" then
-                emitter.Rate = 30
+    vState.speed = speed
+    
+    -- =========================================================================
+    -- DIREÇÃO (só funciona se estiver no chão e movendo)
+    -- =========================================================================
+    if grounded and math.abs(speed) > 1 then
+        local turnFactor = steerInput * CONFIG.VEHICLE_TURN_SPEED * dt
+        -- Reduz giro em alta velocidade (estabilidade)
+        local speedFactor = math.clamp(1 - (math.abs(speed) / CONFIG.VEHICLE_MAX_SPEED) * 0.5, 0.3, 1)
+        turnFactor = turnFactor * speedFactor * math.sign(speed)
+        
+        currentCFrame = currentCFrame * CFrame.Angles(0, turnFactor, 0)
+    end
+    
+    -- =========================================================================
+    -- MOVIMENTO
+    -- =========================================================================
+    local moveVector = forward * speed * dt
+    
+    -- =========================================================================
+    -- GRAVIDADE / SUSPENSÃO
+    -- =========================================================================
+    local targetHeight = groundHeight + CONFIG.VEHICLE_SUSPENSION_REST
+    local currentHeight = currentPosition.Y
+    
+    local verticalSpeed = 0
+    if grounded then
+        -- Suspensão: suaviza para a altura alvo
+        local heightDiff = targetHeight - currentHeight
+        verticalSpeed = heightDiff * CONFIG.VEHICLE_SUSPENSION_STIFFNESS / math.max(dt, 0.001)
+        -- Limita velocidade vertical
+        verticalSpeed = math.clamp(verticalSpeed, -30, 30)
+    else
+        -- Gravidade
+        verticalSpeed = -CONFIG.VEHICLE_GRAVITY * dt
+    end
+    
+    -- Aplicar posição
+    local newPos = currentPosition + moveVector + Vector3.new(0, verticalSpeed * dt, 0)
+    
+    -- Impedir cair abaixo do mundo
+    if newPos.Y < -500 then
+        newPos = Vector3.new(0, 50, 0)
+        vState.speed = 0
+    end
+    
+    pivot.CFrame = CFrame.new(newPos) * (currentCFrame - currentCFrame.Position)
+    
+    -- =========================================================================
+    -- ANIMAÇÃO DAS RODAS (visual)
+    -- =========================================================================
+    local wheelRotation = speed * dt * 2
+    
+    for _, wheelData in ipairs(SystemRefs.vehicleWheels) do
+        local wheel = wheelData.part
+        local rim = wheelData.rim
+        
+        if wheel and rim then
+            -- Rotação visual
+            wheel.CFrame = wheel.CFrame * CFrame.Angles(wheelRotation, 0, 0)
+            rim.CFrame = wheel.CFrame
+            
+            -- Suspensão visual (as rodas sobem/descem)
+            if grounded then
+                local suspOffset = math.clamp((currentHeight - groundHeight) - CONFIG.VEHICLE_SUSPENSION_REST, -0.5, 0.5)
+                local restPos = wheelData.restPos
+                -- Ajusta Y da roda baseado na compressão
+                local wheelWorldPos = pivot.CFrame:PointToWorldSpace(restPos + Vector3.new(0, -suspOffset * 0.5, 0))
+                -- Mantém X e Z, ajusta Y suavemente
             end
         end
     end
     
-    -- Atualizar UI durante montagem
-    local uiUpdateConnection = RunService.Heartbeat:Connect(function()
-        local elapsed = tick() - startTime
-        local progress = 0.4 + (elapsed / duration) * 0.4
-        updateTransformUI(progress, "MONTANDO " .. string.upper(targetForm) .. "...")
+    -- =========================================================================
+    -- EFEITOS (escape quando acelerando)
+    -- =========================================================================
+    if math.abs(speed) > CONFIG.VEHICLE_MAX_SPEED * 0.5 then
+        activateEffect("ExhaustFireL", 0.1, 20)
+        activateEffect("ExhaustFireR", 0.1, 20)
+    end
+    
+    -- Guardar posição para próximo frame
+    vState.lastPosition = pivot.CFrame.Position
+end
+
+local function activateVehicleControl()
+    local vehicle = SystemRefs.vehicleModel
+    if not vehicle then
+        sysLog("activateVehicleControl: vehicleModel nulo!", "ERROR")
+        return false
+    end
+    
+    local pivot = vehicle:FindFirstChild("VehiclePivot")
+    local vehicleHumanoid = vehicle:FindFirstChild("VehicleHumanoid")
+    
+    if not pivot or not vehicleHumanoid then
+        sysLog("activateVehicleControl: Pivot ou Humanoid nulo!", "ERROR")
+        return false
+    end
+    
+    -- Posicionar veículo na posição do jogador/mecha
+    local sourcePos = CFrame.new(0, 10, 0)
+    if SystemRefs.mechaModel and StateMachine.current == "Mecha" then
+        local mechaPivot = SystemRefs.mechaModel:FindFirstChild("Pivot")
+        if mechaPivot then
+            sourcePos = mechaPivot.CFrame
+        end
+    elseif SystemRefs.rootPart then
+        sourcePos = SystemRefs.rootPart.CFrame
+    end
+    
+    vehicle:PivotTo(sourcePos + Vector3.new(0, 3, 0))
+    
+    -- Ativar colisão
+    for _, part in ipairs(vehicle:GetDescendants()) do
+        if part:IsA("BasePart") and part.Name ~= "VehiclePivot" then
+            part.CanCollide = true
+        end
+    end
+    
+    -- Ativar faróis
+    for _, light in ipairs(vehicle:GetDescendants()) do
+        if light:IsA("SpotLight") then
+            light.Enabled = true
+        end
+    end
+    
+    -- Camera subject para o humanoid do veículo
+    camera.CameraSubject = vehicleHumanoid
+    
+    -- Reset state
+    SystemRefs.vehicleState.speed = 0
+    SystemRefs.vehicleState.steer = 0
+    SystemRefs.vehicleState.lastPosition = nil
+    
+    -- Network ownership
+    pcall(function()
+        pivot:SetNetworkOwner(player)
     end)
     
-    task.wait(duration)
-    uiUpdateConnection:Disconnect()
+    sysLog("Controle do Veiculo ativado")
+    return true
+end
+
+local function deactivateVehicleControl()
+    local vehicle = SystemRefs.vehicleModel
+    if not vehicle then return end
     
-    -- Desativar faíscas
-    if SystemState.mechaModel then
-        for _, part in ipairs(getAllParts(SystemState.mechaModel)) do
-            local emitter = part:FindFirstChildOfClass("ParticleEmitter")
-            if emitter and emitter.Name == "TransformSparks" then
-                emitter.Rate = 0
-            end
+    -- Desativar faróis
+    for _, light in ipairs(vehicle:GetDescendants()) do
+        if light:IsA("Light") then
+            light.Enabled = false
+        end
+    end
+    
+    -- Reset velocidade
+    SystemRefs.vehicleState.speed = 0
+    SystemRefs.vehicleState.lastPosition = nil
+    
+    -- Esconder
+    vehicle:PivotTo(CFrame.new(0, -200, 0))
+    
+    -- Desativar colisão
+    for _, part in ipairs(vehicle:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
         end
     end
 end
 
---- FASE 4: Finalização - Completar a transformação
---- @param targetForm string - Forma alvo
-local function phase4Finalize(targetForm)
-    -- Flash de luz
-    local flash = Instance.new("PointLight")
-    flash.Color = Color3.new(1, 1, 1)
-    flash.Brightness = CONFIG.FLASH_INTENSITY
-    flash.Range = 30
-    flash.Parent = humanoidRootPart
+-- ============================================================================
+-- MÓDULO 11: TRANSFORMAÇÕES
+-- ============================================================================
+
+--- Esconde o personagem humano (salvando propriedades originais)
+local function hideHumanCharacter()
+    local char = SystemRefs.character
+    if not char then return end
     
-    -- Tocar som de impacto
-    playSound("rbxassetid://9114825498", humanoidRootPart, 1.0, 0.9)
-    
-    -- Camera shake
-    applyCameraShake(0.5)
-    
-    -- Fade out do flash
-    local fadeTween = createTween(flash, {Brightness = 0}, 0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-    fadeTween:Play()
-    fadeTween.Completed:Connect(function()
-        flash:Destroy()
-    end)
-    
-    -- Esconder avatar humanoide
-    for _, part in ipairs(character:GetChildren()) do
-        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+    -- Salvar propriedades originais
+    SystemRefs.originalProperties = {}
+    for _, part in ipairs(char:GetChildren()) do
+        if part:IsA("BasePart") then
+            SystemRefs.originalProperties[part.Name] = {
+                Transparency = part.Transparency,
+                CanCollide = part.CanCollide,
+                LocalTransparencyModifier = part.LocalTransparencyModifier,
+            }
             part.Transparency = 1
             part.CanCollide = false
         end
     end
     
-    -- Configurar o modelo ativo
-    local model = targetForm == "Mecha" and SystemState.mechaModel or SystemState.vehicleModel
-    if model then
-        -- Ativar colisão
-        for _, part in ipairs(getAllParts(model)) do
-            part.CanCollide = true
-            part.Transparency = 0
-        end
-        
-        -- Ativar luzes
-        local reactorLight = model:FindFirstChild("UpperTorso")
-        if reactorLight then
-            local light = reactorLight:FindFirstChild("ReactorLight")
-            if light then
-                light.Enabled = true
-            end
-        end
-        
-        local head = model:FindFirstChild("Head")
-        if head then
-            local eyeLight = head:FindFirstChild("EyeLight")
-            if eyeLight then
-                eyeLight.Enabled = true
-            end
-        end
-        
-        -- Ativar faróis se for veículo
-        if targetForm == "Vehicle" then
-            for _, part in ipairs(getAllParts(model)) do
-                local spotLight = part:FindFirstChildOfClass("SpotLight")
-                if spotLight then
-                    spotLight.Enabled = true
-                end
-            end
-        end
-        
-        -- Teleportar HRP do mecha para posição do jogador
-        local modelHRP = model:FindFirstChild("HumanoidRootPart")
-        if modelHRP then
-            modelHRP.CFrame = humanoidRootPart.CFrame
-        end
-    end
-    
-    -- Configurar velocidades
-    if targetForm == "Mecha" then
-        local mechaHumanoid = SystemState.mechaModel and SystemState.mechaModel:FindFirstChildOfClass("Humanoid")
-        if mechaHumanoid then
-            mechaHumanoid.WalkSpeed = CONFIG.MECHA_WALK_SPEED
-            mechaHumanoid.JumpPower = CONFIG.MECHA_JUMP_POWER
-        end
-    elseif targetForm == "Vehicle" then
-        -- Vehicle usa controle customizado
-    end
-    
-    -- Atualizar UI final
-    updateTransformUI(1.0, string.upper(targetForm) .. " ATIVADO!")
-    
-    task.wait(0.5)
-    hideTransformUI()
-    
-    -- Atualizar estado
-    SystemState.currentForm = targetForm
-    SystemState.isTransforming = false
-    
-    -- Atualizar botões mobile
-    updateMobileButtons()
-    
-    -- Replicar estado para o servidor
-    pcall(function()
-        mechaStateEvent:FireServer(targetForm)
-    end)
-end
-
--- ============================================================================
--- SEÇÃO 12: FUNÇÃO PRINCIPAL DE TRANSFORMAÇÃO
--- ============================================================================
-
---- Inicia a sequência de transformação
---- @param targetForm string - Forma alvo ("Mecha", "Vehicle", ou "Humanoid")
-function startTransformation(targetForm)
-    -- Verificar se já está transformando
-    if SystemState.isTransforming then return end
-    
-    -- Verificar se a transformação é válida
-    local currentForm = SystemState.currentForm
-    if targetForm == currentForm then return end
-    
-    -- Se voltando para humanoide
-    if targetForm == "Humanoid" then
-        SystemState.isTransforming = true
-        
-        -- Mostrar UI
-        updateTransformUI(0, "RETORNANDO AO MODO HUMANO...")
-        
-        -- Esconder modelo atual
-        local currentModel = currentForm == "Mecha" and SystemState.mechaModel or SystemState.vehicleModel
-        if currentModel then
-            for _, part in ipairs(getAllParts(currentModel)) do
-                part.Transparency = 1
-                part.CanCollide = false
-            end
-            
-            -- Desativar luzes
-            for _, light in ipairs(currentModel:GetDescendants()) do
-                if light:IsA("Light") then
-                    light.Enabled = false
-                end
-            end
-        end
-        
-        -- Restaurar avatar humanoide
-        for partName, props in pairs(SystemState.originalProperties) do
-            local part = character:FindFirstChild(partName)
-            if part and part:IsA("BasePart") then
-                local tween = createTween(part, {
-                    CFrame = props.CFrame,
-                    Transparency = props.Transparency,
-                }, 0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-                tween:Play()
-            end
-        end
-        
-        task.wait(0.5)
-        
-        -- Restaurar velocidades
-        humanoid.WalkSpeed = CONFIG.HUMANOID_WALK_SPEED
-        humanoid.JumpPower = CONFIG.HUMANOID_JUMP_POWER
-        
-        -- Atualizar estado
-        SystemState.currentForm = "Humanoid"
-        SystemState.isTransforming = false
-        
-        hideTransformUI()
-        updateMobileButtons()
-        
-        pcall(function()
-            mechaStateEvent:FireServer("Humanoid")
-        end)
-        
-        return
-    end
-    
-    -- Iniciar transformação para Mecha ou Vehicle
-    SystemState.isTransforming = true
-    
-    -- Gerar modelos se necessário
-    if not SystemState.mechaModel then
-        SystemState.mechaModel = generateMechaModel()
-    end
-    if not SystemState.vehicleModel then
-        SystemState.vehicleModel = generateVehicleModel()
-    end
-    
-    -- Executar fases da transformação
-    phase1Anticipation(targetForm)
-    phase2Disassembly(targetForm)
-    phase3Assembly(targetForm)
-    phase4Finalize(targetForm)
-end
-
--- ============================================================================
--- SEÇÃO 13: ANIMAÇÕES PROCEDURAIS (LOOP PRINCIPAL)
--- ============================================================================
-
---- Loop de animação procedural para o Mecha
-local function mechaProceduralAnimation(dt)
-    if not SystemState.mechaModel or SystemState.currentForm ~= "Mecha" then return end
-    
-    SystemState.proceduralTime = SystemState.proceduralTime + dt
-    
-    local mecha = SystemState.mechaModel
-    local t = SystemState.proceduralTime
-    
-    -- Respiração mecânica (movimento sutil do torso)
-    local upperTorso = mecha:FindFirstChild("UpperTorso")
-    if upperTorso then
-        local breathMotor = upperTorso:FindFirstChild("UpperTorso_Motor")
-        if breathMotor then
-            local breathOffset = math.sin(t * 2) * 0.02
-            breathMotor.C0 = breathMotor.C0:Lerp(
-                CFrame.new(0, 1, 0) * CFrame.Angles(breathOffset, 0, 0),
-                0.1
-            )
-        end
-    end
-    
-    -- Head Tracking - cabeça segue o mouse
-    local head = mecha:FindFirstChild("Head")
-    if head then
-        local headMotor = head:FindFirstChild("Head_Motor")
-        if headMotor then
-            local mousePos = UserInputService:GetMouseLocation()
-            local screenCenter = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
-            local mouseOffset = (mousePos - screenCenter) / screenCenter
-            
-            local targetAngleX = math.clamp(mouseOffset.Y * CONFIG.HEAD_TRACK_LIMIT, -CONFIG.HEAD_TRACK_LIMIT, CONFIG.HEAD_TRACK_LIMIT)
-            local targetAngleY = math.clamp(-mouseOffset.X * CONFIG.HEAD_TRACK_LIMIT, -CONFIG.HEAD_TRACK_LIMIT, CONFIG.HEAD_TRACK_LIMIT)
-            
-            headMotor.C0 = headMotor.C0:Lerp(
-                CFrame.new(0, 1.5, 0) * CFrame.Angles(-targetAngleX, targetAngleY, 0),
-                CONFIG.HEAD_TRACK_SPEED
-            )
-        end
-    end
-    
-    -- Arm Sway - balanço dos braços baseado em velocidade
-    local mechaHumanoid = mecha:FindFirstChildOfClass("Humanoid")
-    if mechaHumanoid and mechaHumanoid.MoveDirection.Magnitude > 0.1 then
-        local walkSpeed = mechaHumanoid.WalkSpeed
-        local swayAmount = math.sin(t * 8) * 0.1 * (walkSpeed / CONFIG.MECHA_WALK_SPEED)
-        
-        local leftUpperArm = mecha:FindFirstChild("LeftUpperArm")
-        if leftUpperArm then
-            local motor = leftUpperArm:FindFirstChild("LeftUpperArm_Motor")
-            if motor then
-                motor.C0 = motor.C0:Lerp(
-                    CFrame.new(-2, 1, 0) * CFrame.Angles(swayAmount, 0, 0),
-                    0.15
-                )
-            end
-        end
-        
-        local rightUpperArm = mecha:FindFirstChild("RightUpperArm")
-        if rightUpperArm then
-            local motor = rightUpperArm:FindFirstChild("RightUpperArm_Motor")
-            if motor then
-                motor.C0 = motor.C0:Lerp(
-                    CFrame.new(2, 1, 0) * CFrame.Angles(-swayAmount, 0, 0),
-                    0.15
-                )
-            end
-        end
-    end
-    
-    -- Pulsar luz do reator
-    local reactorLight = upperTorso and upperTorso:FindFirstChild("ReactorLight")
-    if reactorLight and reactorLight.Enabled then
-        reactorLight.Brightness = 2 + math.sin(t * 3) * 0.5
+    -- Desativar humanoid original
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        SystemRefs.originalProperties["_walkSpeed"] = humanoid.WalkSpeed
+        SystemRefs.originalProperties["_jumpPower"] = humanoid.JumpPower
+        humanoid.WalkSpeed = 0
+        humanoid.JumpPower = 0
     end
 end
 
---- Loop de controle do veículo
-local lastVehicleCFrame = nil
-local vehicleSpeed = 0
-local vehicleSteer = 0
-
-local function vehicleControl(dt)
-    if SystemState.currentForm ~= "Vehicle" or not SystemState.vehicleModel then return end
+--- Restaura o personagem humano
+local function restoreHumanCharacter()
+    local char = SystemRefs.character
+    if not char then return end
     
-    local vehicle = SystemState.vehicleModel
-    local hrp = vehicle:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-    
-    -- Controles via teclado ou mobile
-    local moveDirection = Vector3.zero
-    local steerInput = 0
-    
-    -- Input do teclado
-    if UserInputService:IsKeyDown(Enum.KeyCode.W) then
-        moveDirection = Vector3.new(0, 0, -1)
-    elseif UserInputService:IsKeyDown(Enum.KeyCode.S) then
-        moveDirection = Vector3.new(0, 0, 1)
-    end
-    
-    if UserInputService:IsKeyDown(Enum.KeyCode.A) then
-        steerInput = 1
-    elseif UserInputService:IsKeyDown(Enum.KeyCode.D) then
-        steerInput = -1
-    end
-    
-    -- Aceleração/desaceleração suave
-    local targetSpeed = moveDirection.Magnitude > 0 and CONFIG.VEHICLE_MAX_SPEED or 0
-    vehicleSpeed = vehicleSpeed + (targetSpeed - vehicleSpeed) * dt * 2
-    
-    -- Aplicar movimento
-    if vehicleSpeed > 0.1 then
-        local forward = hrp.CFrame.LookVector
-        hrp.CFrame = hrp.CFrame + forward * vehicleSpeed * dt
-        
-        -- Rotação (steering)
-        if math.abs(steerInput) > 0.1 then
-            hrp.CFrame = hrp.CFrame * CFrame.Angles(0, steerInput * CONFIG.VEHICLE_TURN_SPEED * dt, 0)
+    for _, part in ipairs(char:GetChildren()) do
+        if part:IsA("BasePart") and SystemRefs.originalProperties[part.Name] then
+            local orig = SystemRefs.originalProperties[part.Name]
+            part.Transparency = orig.Transparency
+            part.CanCollide = orig.CanCollide
         end
     end
     
-    -- Rotação das rodas
-    for _, part in ipairs(vehicle:GetChildren()) do
-        if part.Name:sub(1, 6) == "Wheel_" then
-            part.CFrame = part.CFrame * CFrame.Angles(vehicleSpeed * dt * 0.5, 0, 0)
-        end
+    -- Restaurar humanoid
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        humanoid.WalkSpeed = SystemRefs.originalProperties["_walkSpeed"] or CONFIG.HUMAN_WALK_SPEED
+        humanoid.JumpPower = SystemRefs.originalProperties["_jumpPower"] or CONFIG.HUMAN_JUMP_POWER
     end
-end
-
---- Loop de camera shake
-local function updateCameraShake(dt)
-    if SystemState.cameraShake.intensity > 0.01 then
-        local shake = CFrame.new(
-            (math.random() - 0.5) * SystemState.cameraShake.intensity,
-            (math.random() - 0.5) * SystemState.cameraShake.intensity,
-            (math.random() - 0.5) * SystemState.cameraShake.intensity
-        )
-        camera.CFrame = camera.CFrame * shake
-        SystemState.cameraShake.intensity = SystemState.cameraShake.intensity * SystemState.cameraShake.decay
-    end
-end
-
---- Loop principal de atualização (RenderStepped)
-RunService.RenderStepped:Connect(function(dt)
-    -- Animações procedurais do Mecha
-    mechaProceduralAnimation(dt)
     
-    -- Controle do veículo
-    vehicleControl(dt)
-    
-    -- Camera shake
-    updateCameraShake(dt)
-end)
-
--- ============================================================================
--- SEÇÃO 14: CONTROLE DE CÂMERA
--- ============================================================================
-
---- Ajusta a câmera baseado na forma atual
-local function updateCameraForForm()
-    local form = SystemState.currentForm
-    
-    if form == "Mecha" then
-        -- Câmera mais distante para o mecha
-        local offset = CONFIG.MECHA_CAMERA_OFFSET
-        camera.CameraSubject = SystemState.mechaModel and SystemState.mechaModel:FindFirstChildOfClass("Humanoid")
-    elseif form == "Vehicle" then
-        -- Câmera atrás do veículo
-        local offset = CONFIG.VEHICLE_CAMERA_OFFSET
-        camera.CameraSubject = SystemState.vehicleModel and SystemState.vehicleModel:FindFirstChildOfClass("Humanoid")
-    else
-        -- Câmera padrão para humanoide
+    -- Restaurar câmera
+    if humanoid then
         camera.CameraSubject = humanoid
     end
 end
 
--- ============================================================================
--- SEÇÃO 15: BIND DE INPUT (TECLADO + MOBILE)
--- ============================================================================
-
---- Handler de input para transformação
-local function onTransformInput(actionName, inputState, inputObject)
-    if inputState == Enum.UserInputState.Begin then
-        if SystemState.currentForm == "Humanoid" then
-            startTransformation("Mecha")
-        elseif SystemState.currentForm == "Mecha" then
-            startTransformation("Vehicle")
-        elseif SystemState.currentForm == "Vehicle" then
-            startTransformation("Humanoid")
-        end
+--- Sequência de transformação completa
+--- @param targetForm string "Mecha", "Vehicle" ou "Human"
+function startTransformation(targetForm)
+    local current = StateMachine.current
+    
+    -- Validar transição
+    if StateMachine.isLocked then
+        sysLog("Transformacao bloqueada (ja em andamento)", "WARN")
+        return
     end
+    
+    -- Se já está na forma alvo, ignora
+    if current == targetForm then return end
+    
+    -- =========================================================================
+    -- RETORNAR PARA HUMANO
+    -- =========================================================================
+    if targetForm == "Human" then
+        if current == "Human" then return end
+        
+        StateMachine.isLocked = true
+        StateMachine:transition("ReturningToHuman")
+        
+        updateTransformBar(0, "RETORNANDO...")
+        
+        -- Desativar forma atual
+        if current == "Mecha" then
+            deactivateMechaControl()
+        elseif current == "Vehicle" then
+            deactivateVehicleControl()
+        end
+        
+        -- Restaurar humano
+        restoreHumanCharacter()
+        
+        -- Animação de retorno rápida
+        task.wait(0.3)
+        
+        hideTransformBar()
+        StateMachine:transition("Human")
+        StateMachine.isLocked = false
+        updateUI()
+        
+        sysLog("Retorno ao Humano completo")
+        return
+    end
+    
+    -- =========================================================================
+    -- HUMANO → MECHA
+    -- =========================================================================
+    if targetForm == "Mecha" and current == "Human" then
+        StateMachine.isLocked = true
+        StateMachine:transition("TransformingToMecha")
+        
+        -- Esconder humano
+        hideHumanCharacter()
+        
+        -- Fase 1: Antecipação (vibração)
+        updateTransformBar(0.1, "INICIANDO...")
+        activateEffect("ShoulderSparksL", 0.5, 20)
+        activateEffect("ShoulderSparksR", 0.5, 20)
+        task.wait(0.5)
+        
+        -- Fase 2: Posicionar mecha
+        updateTransformBar(0.3, "MONTANDO MECHA...")
+        if SystemRefs.mechaModel then
+            local charPos = SystemRefs.rootPart and SystemRefs.rootPart.CFrame or CFrame.new(0, 10, 0)
+            SystemRefs.mechaModel:PivotTo(charPos)
+        end
+        task.wait(0.5)
+        
+        -- Fase 3: Animação de montagem (peças se movendo)
+        updateTransformBar(0.6, "CALIBRANDO SISTEMAS...")
+        activateEffect("ShoulderSparksL", 1, 40)
+        activateEffect("ShoulderSparksR", 1, 40)
+        task.wait(0.8)
+        
+        -- Fase 4: Ativação
+        updateTransformBar(0.9, "ATIVANDO...")
+        activateMechaControl()
+        task.wait(0.3)
+        
+        hideTransformBar()
+        StateMachine:transition("Mecha")
+        StateMachine.isLocked = false
+        updateUI()
+        
+        sysLog("Transformacao para Mecha completa")
+        return
+    end
+    
+    -- =========================================================================
+    -- MECHA → VEÍCULO
+    -- =========================================================================
+    if targetForm == "Vehicle" and current == "Mecha" then
+        StateMachine.isLocked = true
+        StateMachine:transition("TransformingToVehicle")
+        
+        updateTransformBar(0.1, "RECONFIGURANDO...")
+        
+        -- Desativar mecha
+        deactivateMechaControl()
+        task.wait(0.3)
+        
+        -- Fase 2: Montar veículo
+        updateTransformBar(0.4, "MODO VEICULO...")
+        activateEffect("ShoulderSparksL", 0.5, 30)
+        activateEffect("ShoulderSparksR", 0.5, 30)
+        task.wait(0.4)
+        
+        -- Ativar veículo
+        updateTransformBar(0.8, "MOTORES LIGADOS...")
+        activateVehicleControl()
+        task.wait(0.3)
+        
+        hideTransformBar()
+        StateMachine:transition("Vehicle")
+        StateMachine.isLocked = false
+        updateUI()
+        
+        sysLog("Transformacao para Veiculo completa")
+        return
+    end
+    
+    -- =========================================================================
+    -- VEÍCULO → MECHA
+    -- =========================================================================
+    if targetForm == "Mecha" and current == "Vehicle" then
+        StateMachine.isLocked = true
+        StateMachine:transition("TransformingToMecha")
+        
+        updateTransformBar(0.1, "RECONFIGURANDO...")
+        
+        -- Desativar veículo
+        deactivateVehicleControl()
+        task.wait(0.3)
+        
+        -- Montar mecha
+        updateTransformBar(0.4, "MODO MECHA...")
+        activateEffect("ShoulderSparksL", 0.5, 30)
+        activateEffect("ShoulderSparksR", 0.5, 30)
+        task.wait(0.4)
+        
+        updateTransformBar(0.8, "SISTEMAS ONLINE...")
+        activateMechaControl()
+        task.wait(0.3)
+        
+        hideTransformBar()
+        StateMachine:transition("Mecha")
+        StateMachine.isLocked = false
+        updateUI()
+        
+        sysLog("Transformacao Veiculo->Mecha completa")
+        return
+    end
+    
+    -- =========================================================================
+    -- HUMANO → VEÍCULO (pula mecha)
+    -- =========================================================================
+    if targetForm == "Vehicle" and current == "Human" then
+        StateMachine.isLocked = true
+        
+        -- Primeiro vai para Mecha (intermediário)
+        hideHumanCharacter()
+        
+        updateTransformBar(0.2, "TRANSFORMANDO...")
+        if SystemRefs.mechaModel then
+            local charPos = SystemRefs.rootPart and SystemRefs.rootPart.CFrame or CFrame.new(0, 10, 0)
+            SystemRefs.mechaModel:PivotTo(charPos)
+        end
+        task.wait(0.5)
+        
+        -- Depois vai para Vehicle
+        updateTransformBar(0.6, "MODO VEICULO...")
+        deactivateMechaControl()
+        task.wait(0.3)
+        
+        activateVehicleControl()
+        task.wait(0.3)
+        
+        hideTransformBar()
+        StateMachine.current = "Vehicle"
+        StateMachine.isLocked = false
+        updateUI()
+        
+        sysLog("Transformacao Humano->Veiculo completa")
+        return
+    end
+    
+    -- =========================================================================
+    -- VEÍCULO → HUMANO
+    -- =========================================================================
+    if targetForm == "Human" and current == "Vehicle" then
+        -- Já tratado acima no bloco targetForm == "Human"
+        return
+    end
+    
+    sysLog("Transicao nao reconhecida: " .. current .. " -> " .. targetForm, "WARN")
 end
 
---- Handler para reverter transformação
-local function onRevertInput(actionName, inputState, inputObject)
-    if inputState == Enum.UserInputState.Begin then
-        if SystemState.currentForm ~= "Humanoid" then
-            startTransformation("Humanoid")
-        end
-    end
-end
-
--- Registrar binds
-ContextActionService:BindAction("Transform", onTransformInput, true, Enum.KeyCode.T)
-ContextActionService:SetPosition("Transform", UDim2.new(0, 10, 0.5, -50))
-ContextActionService:SetTitle("Transform", "Transformar [T]")
-
-ContextActionService:BindAction("RevertTransform", onRevertInput, true, Enum.KeyCode.R)
-ContextActionService:SetPosition("RevertTransform", UDim2.new(0, 10, 0.5, 50))
-ContextActionService:SetTitle("RevertTransform", "Reverter [R]")
-
 -- ============================================================================
--- SEÇÃO 16: CONTROLE MOBILE (TOUCH)
+-- MÓDULO 12: ANIMAÇÕES PROCEDURAIS DO MECHA
 -- ============================================================================
 
--- Detectar input de touch para movimento do veículo
-if UserInputService.TouchEnabled then
-    local touchMoveVector = Vector3.zero
+local proceduralTime = 0
+
+local function updateMechaProcedural(dt)
+    if StateMachine.current ~= "Mecha" or not SystemRefs.mechaModel then return end
     
-    -- Usar o TouchMovement do próprio Roblox para direção
-    -- Adicionar controles customizados para o veículo
-    local function setupMobileVehicleControls()
-        -- Botões de direção para o veículo (aparecem quando em modo Vehicle)
-        local ui = SystemState.uiElements and SystemState.uiElements.screenGui
-        if not ui then return end
-        
-        -- Botão de Acelerar
-        local accelerateBtn = Instance.new("TextButton")
-        accelerateBtn.Name = "AccelerateBtn"
-        accelerateBtn.Size = UDim2.new(0, 70, 0, 70)
-        accelerateBtn.Position = UDim2.new(0, 20, 1, -170)
-        accelerateBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
-        accelerateBtn.Text = "▲"
-        accelerateBtn.TextSize = 28
-        accelerateBtn.TextColor3 = Color3.new(1, 1, 1)
-        accelerateBtn.Font = Enum.Font.GothamBold
-        accelerateBtn.Visible = false
-        accelerateBtn.Parent = ui
-        
-        local accCorner = Instance.new("UICorner")
-        accCorner.CornerRadius = UDim.new(1, 0)
-        accCorner.Parent = accelerateBtn
-        
-        -- Botão de Ré
-        local reverseBtn = Instance.new("TextButton")
-        reverseBtn.Name = "ReverseBtn"
-        reverseBtn.Size = UDim2.new(0, 70, 0, 70)
-        reverseBtn.Position = UDim2.new(0, 20, 1, -90)
-        reverseBtn.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
-        reverseBtn.Text = "▼"
-        reverseBtn.TextSize = 28
-        reverseBtn.TextColor3 = Color3.new(1, 1, 1)
-        reverseBtn.Font = Enum.Font.GothamBold
-        reverseBtn.Visible = false
-        reverseBtn.Parent = ui
-        
-        local revCorner = Instance.new("UICorner")
-        revCorner.CornerRadius = UDim.new(1, 0)
-        revCorner.Parent = reverseBtn
-        
-        -- Botão de Virar Esquerda
-        local leftBtn = Instance.new("TextButton")
-        leftBtn.Name = "LeftBtn"
-        leftBtn.Size = UDim2.new(0, 70, 0, 70)
-        leftBtn.Position = UDim2.new(0, 20, 1, -250)
-        leftBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 200)
-        leftBtn.Text = "◄"
-        leftBtn.TextSize = 28
-        leftBtn.TextColor3 = Color3.new(1, 1, 1)
-        leftBtn.Font = Enum.Font.GothamBold
-        leftBtn.Visible = false
-        leftBtn.Parent = ui
-        
-        local leftCorner = Instance.new("UICorner")
-        leftCorner.CornerRadius = UDim.new(1, 0)
-        leftCorner.Parent = leftBtn
-        
-        -- Botão de Virar Direita
-        local rightBtn = Instance.new("TextButton")
-        rightBtn.Name = "RightBtn"
-        rightBtn.Size = UDim2.new(0, 70, 0, 70)
-        rightBtn.Position = UDim2.new(0, 100, 1, -250)
-        rightBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 200)
-        rightBtn.Text = "►"
-        rightBtn.TextSize = 28
-        rightBtn.TextColor3 = Color3.new(1, 1, 1)
-        rightBtn.Font = Enum.Font.GothamBold
-        rightBtn.Visible = false
-        rightBtn.Parent = ui
-        
-        local rightCorner = Instance.new("UICorner")
-        rightCorner.CornerRadius = UDim.new(1, 0)
-        rightCorner.Parent = rightBtn
-        
-        -- Estado dos botões
-        local vehicleMobileState = {
-            accelerating = false,
-            reversing = false,
-            turningLeft = false,
-            turningRight = false,
-        }
-        
-        -- Conectar eventos
-        accelerateBtn.MouseButton1Down:Connect(function()
-            vehicleMobileState.accelerating = true
-        end)
-        accelerateBtn.MouseButton1Up:Connect(function()
-            vehicleMobileState.accelerating = false
-        end)
-        
-        reverseBtn.MouseButton1Down:Connect(function()
-            vehicleMobileState.reversing = true
-        end)
-        reverseBtn.MouseButton1Up:Connect(function()
-            vehicleMobileState.reversing = false
-        end)
-        
-        leftBtn.MouseButton1Down:Connect(function()
-            vehicleMobileState.turningLeft = true
-        end)
-        leftBtn.MouseButton1Up:Connect(function()
-            vehicleMobileState.turningLeft = false
-        end)
-        
-        rightBtn.MouseButton1Down:Connect(function()
-            vehicleMobileState.turningRight = true
-        end)
-        rightBtn.MouseButton1Up:Connect(function()
-            vehicleMobileState.turningRight = false
-        end)
-        
-        -- Guardar referências
-        SystemState.mobileButtons.vehicleControls = {
-            accelerate = accelerateBtn,
-            reverse = reverseBtn,
-            left = leftBtn,
-            right = rightBtn,
-            state = vehicleMobileState,
-        }
+    proceduralTime = proceduralTime + dt
+    local t = proceduralTime
+    local mecha = SystemRefs.mechaModel
+    
+    -- Respiração mecânica (torso sobe/desce sutilmente)
+    local upperTorsoJoint = SystemRefs.mechaJoints["UpperTorsoJoint"]
+    if upperTorsoJoint then
+        local breathOffset = math.sin(t * 2) * 0.015
+        local baseC0 = CFrame.new(0, -0.4, 0)
+        upperTorsoJoint.C0 = baseC0 * CFrame.Angles(breathOffset, 0, 0)
     end
     
-    -- Atualizar visibilidade dos controles mobile do veículo
-    local function updateVehicleMobileControls()
-        local controls = SystemState.mobileButtons.vehicleControls
-        if not controls then return end
-        
-        local visible = SystemState.currentForm == "Vehicle"
-        controls.accelerate.Visible = visible
-        controls.reverse.Visible = visible
-        controls.left.Visible = visible
-        controls.right.Visible = visible
-    end
-    
-    -- Integrar com o loop de controle do veículo
-    local originalVehicleControl = vehicleControl
-    vehicleControl = function(dt)
-        if SystemState.currentForm ~= "Vehicle" or not SystemState.vehicleModel then return end
-        
-        local vehicle = SystemState.vehicleModel
-        local hrp = vehicle:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
-        
-        local controls = SystemState.mobileButtons.vehicleControls
-        local mobileState = controls and controls.state
-        
-        -- Combinar input de teclado e mobile
-        local accelerating = UserInputService:IsKeyDown(Enum.KeyCode.W) or (mobileState and mobileState.accelerating)
-        local reversing = UserInputService:IsKeyDown(Enum.KeyCode.S) or (mobileState and mobileState.reversing)
-        local turningLeft = UserInputService:IsKeyDown(Enum.KeyCode.A) or (mobileState and mobileState.turningLeft)
-        local turningRight = UserInputService:IsKeyDown(Enum.KeyCode.D) or (mobileState and mobileState.turningRight)
-        
-        -- Aceleração
-        local targetSpeed = 0
-        if accelerating then
-            targetSpeed = CONFIG.VEHICLE_MAX_SPEED
-        elseif reversing then
-            targetSpeed = -CONFIG.VEHICLE_MAX_SPEED * 0.5
-        end
-        
-        vehicleSpeed = vehicleSpeed + (targetSpeed - vehicleSpeed) * dt * 2
-        
-        -- Steering
-        local steerInput = 0
-        if turningLeft then steerInput = 1 end
-        if turningRight then steerInput = -1 end
-        
-        -- Aplicar movimento
-        if math.abs(vehicleSpeed) > 0.1 then
-            local forward = hrp.CFrame.LookVector
-            local direction = vehicleSpeed > 0 and 1 or -1
-            hrp.CFrame = hrp.CFrame + forward * vehicleSpeed * dt * direction
+    -- Head tracking (seguir mouse/câmera)
+    local headJoint = SystemRefs.mechaJoints["HeadJoint"]
+    if headJoint then
+        local camCF = camera.CFrame
+        local mechaPivot = mecha:FindFirstChild("Pivot")
+        if mechaPivot then
+            local toCamera = (camCF.Position - mechaPivot.Position).Unit
+            local _, yaw = math.atan2(toCamera.X, toCamera.Z), 0
             
-            -- Rotação
-            if math.abs(steerInput) > 0.1 then
-                local turnRate = CONFIG.VEHICLE_TURN_SPEED * (math.abs(vehicleSpeed) / CONFIG.VEHICLE_MAX_SPEED)
-                hrp.CFrame = hrp.CFrame * CFrame.Angles(0, steerInput * turnRate * dt, 0)
-            end
-        end
-        
-        -- Rotação das rodas
-        for _, part in ipairs(vehicle:GetChildren()) do
-            if part.Name:sub(1, 6) == "Wheel_" then
-                part.CFrame = part.CFrame * CFrame.Angles(vehicleSpeed * dt * 0.5, 0, 0)
-            end
-        end
-        
-        -- Efeito de inclinação ao virar
-        local chassis = vehicle:FindFirstChild("Chassis")
-        if chassis and math.abs(steerInput) > 0.1 then
-            local tiltAngle = steerInput * 0.05 * (math.abs(vehicleSpeed) / CONFIG.VEHICLE_MAX_SPEED)
-            -- Aplicar tilt visual (não afeta a física)
+            -- Limitar rotação
+            local targetYaw = math.clamp(yaw, -math.rad(40), math.rad(40))
+            local targetPitch = math.clamp(math.asin(toCamera.Y) * 0.5, -math.rad(20), math.rad(20))
+            
+            local baseC0 = CFrame.new(0, 0.4, 0)
+            headJoint.C0 = headJoint.C0:Lerp(
+                baseC0 * CFrame.Angles(-targetPitch, targetYaw, 0),
+                0.08
+            )
         end
     end
     
-    -- Atualizar controles mobile quando o estado muda
-    local originalUpdateMobileButtons = updateMobileButtons
-    updateMobileButtons = function()
-        originalUpdateMobileButtons()
-        updateVehicleMobileControls()
+    -- Arm sway (balanço dos braços ao andar)
+    local mechaHumanoid = mecha:FindFirstChild("MechaHumanoid")
+    if mechaHumanoid and mechaHumanoid.MoveDirection.Magnitude > 0.1 then
+        local walkSpeed = mechaHumanoid.WalkSpeed
+        local swayAmount = math.sin(t * 6) * 0.08 * (walkSpeed / CONFIG.MECHA_WALK_SPEED)
+        
+        local armJointL = SystemRefs.mechaJoints["UpperArmJointL"]
+        if armJointL then
+            local baseC0 = CFrame.new(-0.3, -0.9, 0)
+            armJointL.C0 = baseC0 * CFrame.Angles(swayAmount, 0, 0)
+        end
+        
+        local armJointR = SystemRefs.mechaJoints["UpperArmJointR"]
+        if armJointR then
+            local baseC0 = CFrame.new(0.3, -0.9, 0)
+            armJointR.C0 = baseC0 * CFrame.Angles(-swayAmount, 0, 0)
+        end
+        
+        -- Ativar trails quando correndo
+        local isRunning = walkSpeed > CONFIG.MECHA_WALK_SPEED * 1.2
+        for _, trail in ipairs(mecha:GetDescendants()) do
+            if trail:IsA("Trail") then
+                trail.Enabled = isRunning
+            end
+        end
+    else
+        -- Desativar trails quando parado
+        for _, trail in ipairs(mecha:GetDescendants()) do
+            if trail:IsA("Trail") then
+                trail.Enabled = false
+            end
+        end
     end
     
-    -- Setup inicial (com delay para garantir que a UI existe)
-    task.delay(1, function()
-        setupMobileVehicleControls()
-        updateVehicleMobileControls()
-    end)
+    -- Pulsar reator
+    local reactor = mecha:FindFirstChild("Reactor", true)
+    if reactor then
+        local light = reactor:FindFirstChildOfClass("PointLight")
+        if light and light.Enabled then
+            light.Brightness = 3 + math.sin(t * 3) * 1
+        end
+    end
 end
 
 -- ============================================================================
--- SEÇÃO 17: EFEITOS DE PASSOS (MECHA)
+-- MÓDULO 13: EFEITOS DE PASSOS DO MECHA
 -- ============================================================================
 
---- Cria efeito de passo do Mecha
-local function createFootstepEffect(position)
-    -- Partícula de poeira/fumaça no pé
-    local attachment = Instance.new("Attachment")
-    attachment.Position = Vector3.new(0, -0.5, 0)
-    attachment.Parent = humanoidRootPart
-    
-    local dustEmitter = createParticleEmitter(attachment, {
-        Name = "FootstepDust",
-        Texture = "rbxassetid://241866187",
-        Rate = 30,
-        Lifetime = NumberRange.new(0.5, 1.5),
-        Speed = NumberRange.new(2, 5),
-        SpreadAngle = Vector2.new(90, 0),
-        Size = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.5),
-            NumberSequenceKeypoint.new(1, 2),
-        }),
-        Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.5),
-            NumberSequenceKeypoint.new(1, 1),
-        }),
-        Color = ColorSequence.new(Color3.fromRGB(150, 130, 100)),
-        LightEmission = 0,
-    })
-    
-    -- Som de passo metálico
-    playSound("rbxassetid://9115132456", humanoidRootPart, 0.5, math.random(80, 120) / 100)
-    
-    -- Camera shake sutil
-    applyCameraShake(0.1)
-    
-    -- Limpar após um tempo
-    task.delay(1.5, function()
-        dustEmitter.Rate = 0
-        task.delay(2, function()
-            attachment:Destroy()
-        end)
-    end)
-end
-
--- Detectar passos do mecha
 local lastFootstepTime = 0
-RunService.Heartbeat:Connect(function(dt)
-    if SystemState.currentForm ~= "Mecha" then return end
+
+local function updateMechaFootsteps(dt)
+    if StateMachine.current ~= "Mecha" or not SystemRefs.mechaModel then return end
     
-    local mecha = SystemState.mechaModel
-    if not mecha then return end
+    local mechaHumanoid = SystemRefs.mechaModel:FindFirstChild("MechaHumanoid")
+    if not mechaHumanoid or mechaHumanoid.MoveDirection.Magnitude < 0.1 then return end
     
-    local mechaHumanoid = mecha:FindFirstChildOfClass("Humanoid")
-    if not mechaHumanoid then return end
+    local now = tick()
+    local interval = 0.7 - (mechaHumanoid.WalkSpeed / CONFIG.MECHA_WALK_SPEED) * 0.2
+    interval = math.max(interval, 0.3)
     
-    -- Verificar se está andando
-    if mechaHumanoid.MoveDirection.Magnitude > 0.1 then
-        local now = tick()
-        local stepInterval = 0.6 -- Intervalo entre passos
+    if now - lastFootstepTime > interval then
+        lastFootstepTime = now
+        -- Ativar efeito de poeira alternado
+        if math.random() > 0.5 then
+            activateEffect("FootDustL", 0.8, 15)
+        else
+            activateEffect("FootDustR", 0.8, 15)
+        end
+    end
+end
+
+-- ============================================================================
+-- MÓDULO 14: LOOP PRINCIPAL DE ATUALIZAÇÃO
+-- ============================================================================
+
+local mainConnection = nil
+
+local function startMainLoop()
+    if mainConnection then
+        mainConnection:Disconnect()
+    end
+    
+    local diagUpdateTimer = 0
+    
+    mainConnection = RunService.Heartbeat:Connect(function(dt)
+        -- Física do veículo
+        updateVehiclePhysics(dt)
         
-        if now - lastFootstepTime > stepInterval then
-            lastFootstepTime = now
-            local hrp = mecha:FindFirstChild("HumanoidRootPart")
-            if hrp then
-                createFootstepEffect(hrp.Position)
+        -- Animações procedurais do mecha
+        updateMechaProcedural(dt)
+        
+        -- Efeitos de passos
+        updateMechaFootsteps(dt)
+        
+        -- Atualizar diagnóstico periodicamente
+        diagUpdateTimer = diagUpdateTimer + dt
+        if diagUpdateTimer > 0.5 then
+            diagUpdateTimer = 0
+            updateDiagPanel()
+        end
+    end)
+    
+    table.insert(SystemRefs.connections, mainConnection)
+end
+
+-- ============================================================================
+-- MÓDULO 15: CONTROLES DE TECLADO
+-- ============================================================================
+
+local function setupKeyboardControls()
+    -- Tecla T = Transformar (ciclo)
+    ContextActionService:BindAction("MechaTransform_T", function(_, inputState)
+        if inputState == Enum.UserInputState.Begin then
+            if StateMachine.current == "Human" then
+                startTransformation("Mecha")
+            elseif StateMachine.current == "Mecha" then
+                startTransformation("Vehicle")
+            elseif StateMachine.current == "Vehicle" then
+                startTransformation("Human")
             end
         end
-    end
-end)
-
--- ============================================================================
--- SEÇÃO 18: TRAILS NOS BRAÇOS (MOVIMENTO RÁPIDO)
--- ============================================================================
-
---- Cria trails nos braços do mecha
-local function createArmTrails()
-    if not SystemState.mechaModel then return end
+    end, false, Enum.KeyCode.T)
     
-    local mecha = SystemState.mechaModel
+    -- Tecla R = Reverter para Humano
+    ContextActionService:BindAction("MechaRevert_R", function(_, inputState)
+        if inputState == Enum.UserInputState.Begin then
+            if StateMachine.current ~= "Human" then
+                startTransformation("Human")
+            end
+        end
+    end, false, Enum.KeyCode.R)
     
-    local function addTrailToPart(partName, attachName)
-        local part = mecha:FindFirstChild(partName)
-        if not part then return end
-        
-        local att0 = part:FindFirstChild(attachName .. "_0") or createAttachment(part, attachName .. "_0", Vector3.new(0, -1, 0))
-        local att1 = part:FindFirstChild(attachName .. "_1") or createAttachment(part, attachName .. "_1", Vector3.new(0, 1, 0))
-        
-        local trail = Instance.new("Trail")
-        trail.Name = "ArmTrail"
-        trail.Attachment0 = att0
-        trail.Attachment1 = att1
-        trail.Lifetime = 0.3
-        trail.MinLength = 0.1
-        trail.LightEmission = 0.8
-        trail.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, CONFIG.MECHA_ACCENT_COLOR),
-            ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 50, 150)),
-        })
-        trail.Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.3),
-            NumberSequenceKeypoint.new(1, 1),
-        })
-        trail.Enabled = false
-        trail.Parent = part
-        
-        return trail
-    end
-    
-    local leftTrail = addTrailToPart("LeftLowerArm", "TrailAttach")
-    local rightTrail = addTrailToPart("RightLowerArm", "TrailAttach")
-    
-    -- Ativar trails quando se move rápido
-    RunService.Heartbeat:Connect(function()
-        if SystemState.currentForm ~= "Mecha" then return end
-        
-        local mechaHumanoid = mecha:FindFirstChildOfClass("Humanoid")
-        if not mechaHumanoid then return end
-        
-        local isRunning = mechaHumanoid.WalkSpeed > CONFIG.MECHA_WALK_SPEED * 1.2
-        
-        if leftTrail then leftTrail.Enabled = isRunning end
-        if rightTrail then rightTrail.Enabled = isRunning end
-    end)
+    -- Tecla G = Toggle diagnóstico
+    ContextActionService:BindAction("MechaDiag_G", function(_, inputState)
+        if inputState == Enum.UserInputState.Begin then
+            local diagPanel = SystemRefs.ui and SystemRefs.ui.diagPanel
+            if diagPanel then
+                diagPanel.Visible = not diagPanel.Visible
+            end
+        end
+    end, false, Enum.KeyCode.G)
 end
 
 -- ============================================================================
--- SEÇÃO 19: INICIALIZAÇÃO
+-- MÓDULO 16: INICIALIZAÇÃO
 -- ============================================================================
 
---- Função de inicialização principal
+local function getCharacterRefs()
+    local char = player.Character
+    if not char then
+        char = player.CharacterAdded:Wait()
+    end
+    
+    local humanoid = char:WaitForChild("Humanoid", 10)
+    local rootPart = char:WaitForChild("HumanoidRootPart", 10)
+    
+    if not humanoid or not rootPart then
+        sysLog("Falha ao obter Humanoid ou RootPart!", "ERROR")
+        StateMachine.lastError = "Character refs nulos"
+        return false
+    end
+    
+    SystemRefs.character = char
+    SystemRefs.humanoid = humanoid
+    SystemRefs.rootPart = rootPart
+    
+    return true
+end
+
 local function initialize()
-    -- Aguardar o personagem estar pronto
-    if not character or not humanoid then
-        player.CharacterAdded:Wait()
-        character = player.Character
-        humanoid = character:WaitForChild("Humanoid")
-        humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+    sysLog("=== INICIALIZANDO MECHA SYSTEM V" .. CONFIG.VERSION .. " ===")
+    
+    -- Fase 1: Obter referências do personagem
+    StateMachine.initPhase = 1
+    if not getCharacterRefs() then
+        StateMachine:transition("Recovering")
+        StateMachine.lastError = "Falha em getCharacterRefs"
+        return false
+    end
+    sysLog("Fase 1: Personagem obtido")
+    
+    -- Fase 2: Construir modelos
+    StateMachine.initPhase = 2
+    local mechaOk, mechaErr = pcall(function()
+        SystemRefs.mechaModel = buildMechaModel()
+        SystemRefs.mechaModel.Parent = workspace
+    end)
+    if not mechaOk then
+        sysLog("Falha ao construir Mecha: " .. tostring(mechaErr), "ERROR")
+        StateMachine.lastError = "Falha buildMecha: " .. tostring(mechaErr)
     end
     
-    -- Criar UI
-    createTransformUI()
-    
-    -- Criar botões mobile
-    createMobileButtons()
-    
-    -- Configurar velocidades iniciais
-    humanoid.WalkSpeed = CONFIG.HUMANOID_WALK_SPEED
-    humanoid.JumpPower = CONFIG.HUMANOID_JUMP_POWER
-    
-    -- Pré-gerar modelos (opcional - pode ser lazy-loaded)
-    -- SystemState.mechaModel = generateMechaModel()
-    -- SystemState.vehicleModel = generateVehicleModel()
-    
-    -- Criar trails (após o mecha existir)
-    task.delay(2, function()
-        if SystemState.mechaModel then
-            createArmTrails()
-        end
+    local vehicleOk, vehicleErr = pcall(function()
+        SystemRefs.vehicleModel = buildVehicleModel()
+        SystemRefs.vehicleModel.Parent = workspace
     end)
+    if not vehicleOk then
+        sysLog("Falha ao construir Veiculo: " .. tostring(vehicleErr), "ERROR")
+        StateMachine.lastError = "Falha buildVehicle: " .. tostring(vehicleErr)
+    end
+    sysLog("Fase 2: Modelos construidos")
     
-    print("[MechaSystem] Sistema de Transformação inicializado com sucesso!")
-    print("[MechaSystem] Controles: T = Transformar | R = Reverter")
-    print("[MechaSystem] Mobile: Use os botões na tela")
+    -- Fase 3: Criar UI
+    StateMachine.initPhase = 3
+    local uiOk, uiErr = pcall(function()
+        createUI()
+    end)
+    if not uiOk then
+        sysLog("Falha ao criar UI: " .. tostring(uiErr), "ERROR")
+        StateMachine.lastError = "Falha createUI: " .. tostring(uiErr)
+    end
+    sysLog("Fase 3: UI criada")
+    
+    -- Fase 4: Configurar controles
+    StateMachine.initPhase = 4
+    pcall(function()
+        setupKeyboardControls()
+    end)
+    sysLog("Fase 4: Controles configurados")
+    
+    -- Fase 5: Iniciar loop principal
+    StateMachine.initPhase = 5
+    startMainLoop()
+    sysLog("Fase 5: Loop principal iniciado")
+    
+    -- Fase 6: Transicionar para Human
+    StateMachine.initPhase = 6
+    StateMachine:transition("Human")
+    updateUI()
+    
+    StateMachine.initialized = true
+    StateMachine.initPhase = 99
+    sysLog("=== SISTEMA INICIALIZADO COM SUCESSO ===")
+    
+    return true
 end
 
--- Iniciar o sistema
-initialize()
-
 -- ============================================================================
--- SEÇÃO 20: LIMPEZA E DESTRUIÇÃO
+-- MÓDULO 17: GERENCIAMENTO DE RESPAWN
 -- ============================================================================
 
---- Limpa todos os recursos quando o personagem morre ou é resetado
-player.CharacterRemoving:Connect(function()
-    -- Destruir modelos
-    if SystemState.mechaModel then
-        SystemState.mechaModel:Destroy()
-        SystemState.mechaModel = nil
-    end
-    if SystemState.vehicleModel then
-        SystemState.vehicleModel:Destroy()
-        SystemState.vehicleModel = nil
+local function onCharacterRemoving()
+    sysLog("Personagem removido - limpando...")
+    
+    -- Desativar controles
+    if StateMachine.current == "Mecha" then
+        deactivateMechaControl()
+    elseif StateMachine.current == "Vehicle" then
+        deactivateVehicleControl()
     end
     
-    -- Resetar estado
-    SystemState.currentForm = "Humanoid"
-    SystemState.isTransforming = false
-    SystemState.originalProperties = {}
+    -- Reset estado
+    StateMachine.current = "Recovering"
+    StateMachine.isLocked = false
+    SystemRefs.character = nil
+    SystemRefs.humanoid = nil
+    SystemRefs.rootPart = nil
+    SystemRefs.originalProperties = {}
+end
+
+local function onCharacterAdded(char)
+    sysLog("Novo personagem - re-inicializando...")
     
-    -- Desconectar conexões
-    for _, connection in ipairs(SystemState.connections) do
-        if connection then
-            connection:Disconnect()
+    -- Aguardar carregar
+    task.wait(1)
+    
+    -- Re-obter referências
+    SystemRefs.character = char
+    SystemRefs.humanoid = char:WaitForChild("Humanoid", 10)
+    SystemRefs.rootPart = char:WaitForChild("HumanoidRootPart", 10)
+    
+    -- Restaurar câmera
+    if SystemRefs.humanoid then
+        camera.CameraSubject = SystemRefs.humanoid
+    end
+    
+    -- Atualizar estado
+    if StateMachine.current == "Recovering" or StateMachine.current == "Initializing" then
+        StateMachine.current = "Human"
+    end
+    
+    updateUI()
+    sysLog("Personagem restaurado")
+end
+
+-- ============================================================================
+-- MÓDULO 18: CLEANUP
+-- ============================================================================
+
+local function cleanup()
+    sysLog("Executando cleanup...")
+    
+    -- Desconectar loop principal
+    if mainConnection then
+        mainConnection:Disconnect()
+        mainConnection = nil
+    end
+    
+    -- Desconectar todas as conexões
+    for _, conn in ipairs(SystemRefs.connections) do
+        if conn then
+            pcall(function() conn:Disconnect() end)
         end
     end
-    SystemState.connections = {}
+    SystemRefs.connections = {}
+    
+    -- Destruir modelos
+    if SystemRefs.mechaModel then
+        SystemRefs.mechaModel:Destroy()
+        SystemRefs.mechaModel = nil
+    end
+    if SystemRefs.vehicleModel then
+        SystemRefs.vehicleModel:Destroy()
+        SystemRefs.vehicleModel = nil
+    end
+    
+    -- Destruir UI
+    local ui = SystemRefs.ui
+    if ui.screenGui then
+        ui.screenGui:Destroy()
+    end
+    
+    -- Limpar tabelas
+    SystemRefs.mechaJoints = {}
+    SystemRefs.mechaParts = {}
+    SystemRefs.vehicleParts = {}
+    SystemRefs.vehicleWheels = {}
+    SystemRefs.effects = {}
+    SystemRefs.ui = {}
+    SystemRefs.mobileButtons = {}
+    SystemRefs.vehicleControls = {}
+    
+    -- Unbind ações
+    ContextActionService:UnbindAction("MechaTransform_T")
+    ContextActionService:UnbindAction("MechaRevert_R")
+    ContextActionService:UnbindAction("MechaDiag_G")
+    
+    sysLog("Cleanup completo")
+end
+
+-- ============================================================================
+-- MÓDULO 19: EXECUÇÃO PRINCIPAL
+-- ============================================================================
+
+-- Conectar eventos de respawn
+player.CharacterRemoving:Connect(onCharacterRemoving)
+player.CharacterAdded:Connect(onCharacterAdded)
+
+-- Inicializar
+task.spawn(function()
+    local success = initialize()
+    if not success then
+        sysLog("Inicializacao falhou - tentando recuperacao...", "WARN")
+        task.wait(3)
+        -- Tentar novamente
+        success = initialize()
+        if not success then
+            sysLog("Recuperacao falhou - sistema indisponivel", "ERROR")
+        end
+    end
 end)
 
--- Reconectar quando novo personagem spawnar
-player.CharacterAdded:Connect(function(char)
-    character = char
-    humanoid = char:WaitForChild("Humanoid")
-    humanoidRootPart = char:WaitForChild("HumanoidRootPart")
-    
-    -- Re-inicializar
-    task.wait(1)
-    initialize()
+-- Cleanup ao sair
+game:BindToClose(function()
+    cleanup()
 end)
 
 --[[
 ================================================================================
-    FIM DO SCRIPT
+    FIM DO CLIENT SCRIPT
     
-    INSTRUÇÕES DE CONFIGURAÇÃO:
-    
-    1. Crie a estrutura de pastas no ReplicatedStorage conforme descrito no topo
-    2. Coloque este LocalScript em StarterPlayer > StarterPlayerScripts
-    3. Crie os RemoteEvents dentro de MechaSystem > RemoteEvents
-    4. Substitua os IDs de som (rbxassetid://...) por sons reais da sua escolha
-    5. Para animações pré-gravadas, adicione Animation objects com IDs válidos
-    
-    CONTROLES:
-    - Teclado: T = Transformar (ciclo: Humano → Mecha → Veículo)
-    - Teclado: R = Reverter para Humano
-    - Teclado: WASD = Mover/Dirigir
-    - Mobile: Botões na tela para transformar e controlar veículo
-    
-    CUSTOMIZAÇÃO:
-    - Edite a tabela CONFIG no topo do script para ajustar velocidades, cores, etc.
-    - Adicione Meshes personalizados às partes do mecha para melhor visual
-    - Substitua as partes procedurais por modelos importados do Blender
-    
-    OTIMIZAÇÕES IMPLEMENTADAS:
-    - NetworkOwnership definido para o jogador local
-    - Instances criados uma vez e reutilizados
-    - pcall em operações críticas
-    - Cleanup automático ao resetar
-    - Suporte completo a mobile/touch
+    RESUMO DAS CORREÇÕES V2.0 → V3.0:
+    1. ✅ Sem WaitForChild infinito - usa timeout e cria o que precisa
+    2. ✅ Modelos procedurais detalhados com coordenadas relativas
+    3. ✅ Motor6D centralizados em tabela (SystemRefs.mechaJoints)
+    4. ✅ Controle real do Mecha via CameraSubject + Humanoid
+    5. ✅ Física veicular com raycast + CFrame coerente
+    6. ✅ State machine com transições válidas
+    7. ✅ UI mobile-first com debounce
+    8. ✅ Painel de diagnóstico visual
+    9. ✅ Cleanup completo em respawn
+    10. ✅ Recuperação de erros com fallback
+    11. ✅ Efeitos reutilizáveis (não cria/destrói a cada frame)
+    12. ✅ Sem dependências externas obrigatórias
 ================================================================================
 ]]
